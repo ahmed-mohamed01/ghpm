@@ -1,0 +1,163 @@
+This is a GitHub package installer, that also allows you to compare versions against what is available on apt. 
+
+it will be installed to /home/ahmed/.local/bin    (this will be in $PATH)
+it will be called with ghpm --option
+eg:
+        ghpm install junegunn/fzf
+        ghpm list
+        ghpm update fzf
+
+standard mode is ghpm install [owner/repo], which will fetch from repo, confirm with user and install the latest version of the package.
+ - it users the github api to fetch a list of most recent releases, and obtain latest GitHub version. 
+ - It will store this in a cache_dir/api-cache.json file. One cached item per repo, and this cache will be used if script is run again.
+ - It will get architecture of current system
+ - It will filter the list of recent releases and fetch the most suitable binary. Assets will be scored based on a criteria, and 
+ - checks against a list for architecture matching. eg:  ".*linux.*x86[_-]64" ".*linux.*amd64"
+ - checks for tar.gz first.
+ - if no suitable tar.gz found will list as not found.
+        Repo: owner/repo
+        Latest version: 0.99
+        
+        This repo does not contain valid binaries for current system. 
+
+        Exiting.
+ - if source only, will list that (source only) indyrsf of release assets it will display Source only, no binaries to install. 
+        Repo: owner/repo
+        Latest version: 0.99
+        
+        This repo contains source files only. No binearies to install. 
+
+        Exiting.
+
+ - It will check for and get separate completions / man tar.gz
+ - It will download the asset and extract it to a temp dir (from cache dir, as any newly downloaded files are copied here as well)
+ - it will check if binary is suitable for architecture, check dependencies, check if libc version matches. 
+ - t will compile a list of files to be installed. 
+ - if binary is suitable, it will display the following outout:
+Example output:
+
+        Repo: junegunn/fzf
+        Latest version: 0.57.0
+        Release asset: fzf-0.57.0-linux_amd64.tar.gz
+
+        Files to install:
+            fzf  --> /home/ahmed/.local/bin/fzf
+            man-1 --> /home/ahmed/.local/share/man/man1/fzf.1
+
+        Proceed to install? [y/N]
+
+ghpm --file [location/file.txt] takes a file as input, and will cycle through the entries in the file. 
+- it takes repo-name or | alias as binary name (provided in repos.txt as owner/repo-name | binary-name) binary-name or alias is optional.
+- If alias is provided, it will check apt for latest version for that binary. if alias is not provided, it will take repo-name as binary name, and check that against apt, and give apt versoin. 
+It will use github api to fetch a list of most recent releases, and obtain latest GitHub version. 
+ - It will store this in a cache_dir/api-cache.json file. One cached item per repo, and this cache will be used interactive installer is run again. 
+If will get architecture of current system
+It will filter the list of recent releases and fetch the most suitable binary
+- checks against a list for architecture matching. eg:  ".*linux.*x86[_-]64" ".*linux.*amd64"
+- checks for tar.gz first.
+- if no suitable tar.gz found will list as not found. 
+- if source only, will list that (source only) for GitHub column.
+- It will check for and get separate completions / man tar.gz
+- [more variants]
+It will downlaod this and store in asset cache (cache_dir/assets/owner_repo/asset-name)
+ - If file in asset cache is still the newest, this will be used 
+ - If a newer file is foiund, it will be downloaded to the the directory for the repo, and older file will be deleted. 
+ - On run, script will check for cache older than 90 days and claer them. 
+It will compare GitHub and apt and check which version is newest. Newest gets a green * next to it. 
+Once it has package names, GitHub version, APT version, asset name and whether or not it needs bo be downloaded, It will give an output:
+
+        Processing (7) repositories from repos.txt:
+
+        Binary          Github       APT          Asset                                             
+        ------------------------------------------------------------------------------------------------
+        fzf             0.57.0*      0.29.0       fzf-0.57.0-linux_amd64.tar.gz (cached)                     
+        micro           2.0.14*      2.0.9        micro-2.0.14-linux-arm.tar.gz (Cached)                  
+        zoxide          0.9.6*       0.4.3        zoxide-0.9.6-aarch64-linux-android.tar.gz (cached)        
+        eza             0.20.14*     not found    eza_aarch64-unknown-linux-gnu.tar.gz (downloaded)             
+        fd              10.2.0*      not found    fd-v10.2.0-aarch64-unknown-linux-gnu.tar.gz (cached)      
+        bat             0.24.0*      0.19.0       bat-v0.24.0-aarch64-unknown-linux-gnu.tar.gz (downl...     
+        tldr            source       0.6.4        -  
+
+        Dependencies needed:
+        No additional dependencies required
+
+        Installation options:
+        1. Install all newer versions
+        2. Install all GitHub versions (to /home/ahmed/.local/bin)
+        3. Install all APT versions
+        4. Choose individually
+        5. Cancel
+        Select installation method [1-5]:
+                        
+        - option 1 installs apt or GitHub depending on which ever is newest. If it is a mixture of apt/GitHub versions give user a lsit of GitHub and apt versions to install. and inform that it will need sudo access if there are any apt installs. otherwise proceed as if its a all GitHub install. 
+        - option 2 installs GitHub versions
+        - option 3 will use apt to download versions (sudo apt install -y package1 package2 package3....) and prompt user that this will need sudo access.
+        - option 4 will allow user to choose each version independently:
+        
+        Zoxide   APT version v  GitHub ver 
+
+        1. Install from GitHub
+        2. Install from APT
+        3. Skip
+
+Once a GitHub release is chosen:
+It will extract the files to a temp dir (from cache dir, as any newly downloaded files are copied here as well) and check for binaries, completions files and man files. LIst of files to be installed will be added to $DATA_DIR/gpi-db.json (called packages.json in the script)
+It will check binaries to see if
+ - suitable binary for the system architecture
+ - any dependencies, and will create a list of dependencies as a list as script is running. 
+ - binary name matches repo-name. if binary name provided as | alias, check if it matches alias. If not matching, user will be warned that they do not match, and to check the binary/update the | alias. This will not block install. 
+ - once checks are done, and if binary is suitable it will be copied to $INSTALL_DIR
+ - It will check if files were properly copied to the dir.
+It will copy man files to respective dir, and confirm installed. confirmation does not need to be user facing, but available on debug.
+
+Above only happens if script is run without options. 
+
+has a --list option, which will check database to see if this is something managed by gpi, if so, it will give output like: 
+
+        Packages managed by GH Package installer:
+
+        Package         Version      Location            
+        -------------------------------------------------------
+        zoxide          0.9.6        /home/ahmed/.local/bin/zoxide
+        micro           2.0.14       /home/ahmed/.local/bin/micro
+        fzf             0.57.0       /home/ahmed/.local/bin/fzf
+
+has a --update option which will one option, a package name
+check db to see if its is managed by gpi. if managed by gpi, it will check current installed version (from db) and call the github releases function to fetch proper release for this. It will call the same functions that checks binaries and ensure same procedure is followed (ensure correct architecture, install man pages, install shell-completions, check dependencies). Then it will display:
+
+        Checking for update ...
+                        
+        Package      Current Version    Latest release         
+        -------------------------------------------------------
+        zoxide       0.9.6              0.9.7
+
+        Additional dependencies: No
+
+        Update found! 0.9.6 --> 0.9.7  Proceed? [y/N]
+
+        If proceed, it will overwrite the installed versoin with current verison, ensureing the db is updated. 
+
+        Has a --remove [package] option, which will check if managed by gpi, check db to see which files need to be removed, and inform user.
+
+        Remove zoxide v0.9.6?
+
+        This will remove the following files:
+
+        /home/ahmed/.local/bin/zoxide
+        /home/ahmed/.local/share/man/man1/zoxide
+        /home/ahmed/.local/share/completions/zsh-completions/_zoxide
+
+        Proceed? [y/N]
+
+Once confirmed, it will make the changes and update db.
+
+Has a --version flag that displays current version. 
+
+        v0.02.1
+
+Has a --help that displays help message with usage.
+
+has a --clear-cache that will clear the cache (removes the $CACHE_DIR/assets and clears $CACHE_DIR/api-cache.json)
+
+        Clearing cache...
+        Cache cleared. 
