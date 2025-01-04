@@ -91,20 +91,25 @@ query_github_api() {
     # Fetch from GitHub API
     local api_url="https://api.github.com/repos/$repo_name/releases/latest"
     local auth_header=""
-    [[ -n "$GITHUB_TOKEN" ]] && auth_header="Authorization: token $GITHUB_TOKEN"
+    [[ -n "${GITHUB_TOKEN:-}" ]] && auth_header="Authorization: token $GITHUB_TOKEN"
 
-    local github_response
+    local http_code
+    local api_response
     if [[ -n "$auth_header" ]]; then
-        github_response=$(curl -sSL -w "%{http_code}" -H "$auth_header" -H "Accept: application/vnd.github.v3+json" "$api_url")
+        http_code=$(curl -sI -H "$auth_header" -H "Accept: application/vnd.github.v3+json" "$api_url" | head -n1 | cut -d' ' -f2)
+        [[ "$http_code" == "200" ]] && api_response=$(curl -sS -H "$auth_header" -H "Accept: application/vnd.github.v3+json" "$api_url")
     else
-        github_response=$(curl -sSL -w "%{http_code}" -H "Accept: application/vnd.github.v3+json" "$api_url")
+        http_code=$(curl -sI -H "Accept: application/vnd.github.v3+json" "$api_url" | head -n1 | cut -d' ' -f2)
+        [[ "$http_code" == "200" ]] && api_response=$(curl -sS -H "Accept: application/vnd.github.v3+json" "$api_url")
     fi
-
-    local http_code="${github_response:(-3)}"  # Extract HTTP status code
-    local api_response="${github_response:0:-3}"  # Extract JSON response
 
     case $http_code in
         200)
+            # Verify we got valid JSON 
+            if ! echo "$api_response" | jq empty 2>/dev/null; then
+                log "ERROR" "Invalid JSON response from GitHub API"
+                return 1
+            fi
             # Cache the response with a timestamp
             local new_cache_data
             new_cache_data=$(jq -n --argjson data "$api_response" --arg time "$current_time" \
@@ -128,8 +133,8 @@ query_github_api() {
 
 process_asset_data() {
     local api_response="$1"
-    local system_arch=$(uname -m)  # detect x86_x64
-    local os_type=$(uname -s)      # detect linux/darwin
+    local system_arch=$(uname -m)
+    local os_type=$(uname -s)
     local libc_type="unknown"      
     local bit_arch=$(getconf LONG_BIT)
     local distro=$(grep '^ID=' /etc/os-release | cut -d'=' -f2 | tr -d '"')
@@ -164,27 +169,28 @@ process_asset_data() {
             libc_type="gnu"
         fi
     fi
-    # stream asset names and urls using jq, then process them in sigle pass. assign to arrays declared abouve, 
+
     while IFS= read -r asset_info; do
         name=$(echo "$asset_info" | jq -r '.name')
         url=$(echo "$asset_info" | jq -r '.url')
 
         if [[ "$name" =~ ${EXCLUDED_PATTERNS[$system_arch]} ]]; then
             [[ ${#excluded_assets[@]} -gt 0 ]] && excluded_assets+=(",")
-            excluded_assets+=("{\"name\":\"$name\",\"reason\":\"excluded pattern\"}")
+            excluded_assets+=("{\"name\":\"$name\",\"reason\":\"excluded pattern\",\"url\":\"$url\"}")
             continue    
         elif [[ "$name" =~ [sS]ource[._-?][Cc]ode ]]; then
             [[ ${#source_files[@]} -gt 0 ]] && source_files+=(",")
-            source_files+=("\"$name\"")
-            excluded_assets+=("{\"name\":\"$name\",\"reason\":\"source code archive\"}")
+            source_files+=("{\"name\":\"$name\",\"url\":\"$url\"}")
+            excluded_assets+=("{\"name\":\"$name\",\"reason\":\"source code archive\",\"url\":\"$url\"}")
             continue
         elif [[ "$name" =~ ^completions[^/]*\.(tar\.gz|tgz)$ ]]; then
             [[ ${#completions_files[@]} -gt 0 ]] && completions_files+=(",")
-            completions_files+=("\"$name\"")
-            excluded_assets+=("$name|0|completions files")
+            completions_files+=("{\"name\":\"$name\",\"url\":\"$url\"}")
+            excluded_assets+=("{\"name\":\"$name\",\"reason\":\"completions files\",\"url\":\"$url\"}")
         elif [[ "$name" =~ ^man[^/]*\.(tar\.gz|tgz)$ ]]; then
-            man_files+=("\"$name\"")
-            excluded_assets+=("$name|0|man files")
+            [[ ${#man_files[@]} -gt 0 ]] && man_files+=(",")
+            man_files+=("{\"name\":\"$name\",\"url\":\"$url\"}")
+            excluded_assets+=("{\"name\":\"$name\",\"reason\":\"man files\",\"url\":\"$url\"}")
         else
             local reason=""
             local score=0
@@ -211,45 +217,25 @@ process_asset_data() {
             [[ "$distro" == "fedora" && "$name" =~ fedora ]] && ((score+=25)) && reason+="fedora matched on $distro (+25); "
 
             local asset_json="{\"name\":\"$name\",\"score\":$score,\"reason\":\"${reason%%; }\",\"url\":\"$url\"}"
+            [[ ${#viable_assets[@]} -gt 0 ]] && viable_assets+=(",")
+            viable_assets+=("$asset_json")
+            
             if [[ $score -gt $chosen_score ]]; then
-                [[ -n "$chosen_asset" ]] && viable_assets+=(",")
-                viable_assets+=("$asset_json")
                 chosen_asset="$asset_json"
                 chosen_score=$score
                 chosen_reason="$reason"
-            else
-                viable_assets+=("$asset_json")
             fi
         fi
     done < <(echo "$api_response" | jq -r '.assets[] | {name: .name, url: .browser_download_url} | @json')
 
-    # Output full JSON data
-    local man_json="[]"
-    local completions_json="[]"
-    
-    # Only process man files if there are any
-    if [ ${#man_files[@]} -gt 0 ]; then
-        man_json=$(echo "$api_response" | jq -r --arg names "${man_files[*]}" '
-            [.assets[] | select(.name as $n | ($names | split(" ")) | index($n)) | 
-            {name: .name, url: .browser_download_url}]')
-    fi
-    
-    # Only process completion files if there are any
-    if [ ${#completions_files[@]} -gt 0 ]; then
-        completions_json=$(echo "$api_response" | jq -r --arg names "${completions_files[*]}" '
-            [.assets[] | select(.name as $n | ($names | split(" ")) | index($n)) | 
-            {name: .name, url: .browser_download_url}]')
-    fi
-
-    # Construct the final JSON output
     # Construct the final JSON with proper formatting
     echo "{
-        \"chosen\": $chosen_asset,
+        \"chosen\": ${chosen_asset:-null},
         \"viable\": [${viable_assets[*]}],
         \"excluded\": [${excluded_assets[*]}],
         \"source\": [${source_files[*]}],
-        \"man\": ${man_json:-[]},
-        \"completions\": ${completions_json:-[]}
+        \"man\": [${man_files[*]}],
+        \"completions\": [${completions_files[*]}]
     }" | jq '.'
 }
 
@@ -270,7 +256,7 @@ process_api_response() {
             echo "$api_response" | jq -r '.tag_name | sub("^v"; "")' ;;
         
         "asset-names")
-            echo "$api_response" | jq -r 'asset[].names' ;;
+            echo "$api_response" | jq -r '.assets[].name' ;;
 
         "download-url")
             [[ -z "$extra_arg" ]] && { log "ERROR" "You need to provde the name of the asset"; return 1; } 
@@ -321,8 +307,12 @@ main() {
     file="zoxide-0.9.6-i686-unknown-linux-musl.tar.gz"
     download_url_for_asset=$(process_api_response "download-url" "$api_response" "$file")
     raw_asset_data=$(process_asset_data "$api_response")
-    best_asset=$(process_api_response "choose-best-asset" "$api_response")
-    assets=$(process_api_response "asset-names" "$api_response")
+    if [[ $? -ne 0 ]]; then
+        log "ERROR" "Unable to process"
+    fi
+    #best_asset=$(process_api_response "choose-best-asset" "$api_response")
+    # assets=$(process_api_response "asset-names" "$api_response")
+
 
 
     # Print summary: 
@@ -331,7 +321,8 @@ main() {
     echo "Download URL for $file is $download_url_for_asset"
     echo "Best asset: $best_asset"
     echo "Assets: $assets"
-    #echo "$raw_asset_data" | jq '.'
+    echo "$raw_asset_data" | jq '.'
+    #echo "$api_response" | jq '.'
 
 
 }
