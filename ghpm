@@ -1,8 +1,7 @@
 #! /usr/bin/env bash
 
 # Configure folders
-INSTALL_DIR="${PWD}/.local/bin"
-DATA_DIR="${DEFAULT_BASE_DIR}"
+DATA_DIR="${PWD}/.local/share/ghpm"
 CACHE_DIR="${DATA_DIR}/cache"
 CACHE_FILE="${CACHE_DIR}/api-cache.json"
 ASSET_CACHE_DIR="${CACHE_DIR}/assets"
@@ -25,6 +24,8 @@ log() {
         printf "${color}%s: %s${NC}\n" "$severity" "$message" >&2
     fi
 }
+
+DISPLAY_ISSUES=true
 
 query_github_api() {
     local input="$1"
@@ -50,12 +51,16 @@ query_github_api() {
         
         if [[ "$repo_check" != "200" ]]; then
             log "ERROR" "Repository $repo_name not found or inaccessible"
-            return 1
+            return 4
         fi
     else
         log "ERROR" "Invalid format. Use 'owner/repo' or 'owner/repo | alias'"
-        return 1
+        return 5
     fi
+
+    # Create cache dir
+    mkdir -p "$CACHE_DIR"
+
 
     # Validate cache
     if [[ -f "$CACHE_FILE" ]]; then
@@ -106,12 +111,15 @@ query_github_api() {
                    '{($repo): $new_data}' > "$CACHE_FILE"
             fi
             echo "$api_response"
+            return 0
             ;;
         401) log "ERROR" "Authentication failed for $repo_name. Check GITHUB_TOKEN."; return 1 ;;
-        403) log "ERROR" "Rate limit exceeded or access forbidden for $repo_name."; return 1 ;;
-        404) log "ERROR" "Repository $repo_name not found."; return 1 ;;
-        *) log "ERROR" "GitHub API request failed with status $http_code."; return 1 ;;
+        403) log "ERROR" "Rate limit exceeded or access forbidden for $repo_name."; return 3 ;;
+        404) log "ERROR" "Repository $repo_name not found."; return 4 ;;
+        *) log "ERROR" "GitHub API request failed with status $http_code."; return 10 ;;
     esac
+
+    # Return values: 5 if invalid entry. 0 if successful. 1 if auth failed. 3 if ratelimited. 4 if repo not found. 10 if other error.  
 }
 
 process_api_response() {
@@ -291,15 +299,22 @@ process_api_response() {
 main() {
     
     repo_name=$1
-    api_response=$(query_github_api "$repo_name")
-    processed_response=$(process_api_response "$api_response")
+    if ! api_response=$(query_github_api "$repo_name"); then
+        log "ERROR" "Unable to fetch response"
+    else
+        jqs=$("$api_response" | jq '.assets[].name')
+        echo "$jqs"
+    fi
+
+    if ! processed_response=$(process_api_response "$api_response"); then
+        echo "ERROR: processing response unssuccessful"
+    fi
     
-    latest_version=$(echo "$processed_response" | jq -r '.latest_version')
+    if ! latest_version=$(echo "$processed_response" | jq -r '.latest_version'); then
+        echo "ERROR: Did not complete!"
+    fi
 
     echo "$latest_version"
-
-
-
 
 }
 
