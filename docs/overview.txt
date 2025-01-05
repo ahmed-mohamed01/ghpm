@@ -33,6 +33,54 @@ standard mode is ghpm install [owner/repo], which will fetch from repo, confirm 
  - It will download the asset and extract it to a temp dir (from cache dir, as any newly downloaded files are copied here as well)
  - it will check if binary is suitable for architecture, check dependencies, check if libc version matches. 
  - t will compile a list of files to be installed. 
+
+This is cached to a dir: 
+        $CACHE_DIR/
+        ├── api-cache.json        # Keeps current API response cache (full responses.)
+        └── repos/
+                └── owner_repo/
+                        ├── processed_assets_v1.2.3.json  # Processed asset data
+                        ├── assets/                       # Downloaded assets
+                        │   ├── asset-v1.2.3.tar.gz
+                        │   └── asset-v1.2.3.tar.gz.metadata
+                        └── extracted/                    # For file listing before install
+                        └── v1.2.3/
+                                └── file_manifest.json    # Lists files found in extraction
+
+Processed_assets_json will have format: 
+
+        {
+        "repo": "owner/repo",
+        "version": "1.2.3",
+        "processing_date": "2024-01-05T12:00:00Z",
+        "system_info": {
+                "arch": "x86_64",
+                "os": "Linux",
+                "libc": "gnu",
+                "bits": "64",
+                "distro": "ubuntu"
+        },
+        "version_info": {
+                "github": "1.2.3",
+                "apt": "1.0.0",
+                "comparison": "github_newer"
+        },
+        "has_manfiles": false,
+        "has_completions": false,
+        "has_source": false,
+        "chosen": {
+                "name": "asset.tar.gz",
+                "score": 85,
+                "reason": "scoring reasons...",
+                "url": "https://..."
+        },
+        "viable": [...],
+        "excluded": [...],
+        "man": [...],
+        "completions": [...],
+        "source": [...]
+        }
+
  - if binary is suitable, it will display the following outout:
 Example output:
 

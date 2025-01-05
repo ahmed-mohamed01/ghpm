@@ -5,15 +5,46 @@ DISPLAY_ISSUES=true    # make log output visible.
 
 # Configure folders
 DATA_DIR="${PWD}/.local/share/ghpm"
+INSTALL_DIR="${PWD}/.local/bin"
+
 CACHE_DIR="${DATA_DIR}/cache"
 CACHE_FILE="${CACHE_DIR}/api-cache.json"
 ASSET_CACHE_DIR="${CACHE_DIR}/assets"
+
+DB_DIR="${DATA_DIR}/db"
+DB_FILE="${DB_DIR}/installed.json"
+
+# readonly PROCESSED_CACHE_DIR="${ASSET_CACHE_DIR}/%s"         # Just the dir
+# readonly PROCESSED_CACHE_FILE="%s-%s-asset-cache.json"       # Just the filename
+
+# # Helper function
+# get_processed_cache_path() {
+#     local repo_dir="$(echo "$1" | sed 's|/|_|g')"
+#     local version="$2"
+#     local cache_dir=$(printf "$PROCESSED_CACHE_DIR" "$repo_dir")
+#     printf "$cache_dir/%s" "$(printf "$PROCESSED_CACHE_FILE" "$repo_dir" "$version")"
+# }
 
 # Colors to be used in output
 declare -a ISSUES=()
 readonly YELLOW='\033[1;33m'
 readonly RED='\033[0;31m'
 readonly NC='\033[0m'
+
+# Store important 
+declare -g system_arch=$(uname -m)
+declare -g os_type=$(uname -s)
+declare -g bit_arch=$(getconf LONG_BIT)
+declare -g distro=$(grep '^ID=' /etc/os-release | cut -d'=' -f2 | tr -d '"')
+declare -g libc_type="unknown"      
+    # Detect libc type
+if [[ "$os_type" == "Linux" ]]; then
+    if ldd --version 2>&1 | grep -qE "musl"; then
+        libc_type="musl"
+    elif ldd --version 2>&1 | grep -qE "GNU|GLIBC"; then
+        libc_type="gnu"
+    fi
+fi
 
 # Log function will append debeug info to arrays for easier output. 
 log() {
@@ -27,12 +58,15 @@ log() {
         printf "${color}%s: %s${NC}\n" "$severity" "$message" >&2
     fi
 }
+
 # This will ensure input is valid, check cache to see if it exists, otherwise fetch and cache api_response.
 # Output is full output from github api
+
 query_github_api() {
     local input="$1"
     local ttl=36000    # Cache ttl/valid period, set at 600min
     local current_time=$(date +%s)
+
 
     # Parse and validate input
     local repo_name
@@ -76,7 +110,7 @@ query_github_api() {
             # Check TTL
             if (( current_time - cache_timestamp < ttl )); then
                 # Extract the 'data' field to pass to response processing
-                echo "$repo_cached_data" | jq -c '.data'
+                echo "$repo_cached_data" | jq -c '.data | . + {_source: "cache"}'
                 return 0
             else
                 log "WARNING" "Cache expired for $repo_name. Refreshing..." >&2
@@ -102,7 +136,7 @@ query_github_api() {
         http_code=$(curl -sI -H "Accept: application/vnd.github.v3+json" "$api_url" | head -n1 | cut -d' ' -f2)
         [[ "$http_code" == "200" ]] && api_response=$(curl -sS -H "Accept: application/vnd.github.v3+json" "$api_url")
     fi
-
+    
     case $http_code in
         200)
             # Verify we got valid JSON 
@@ -110,6 +144,9 @@ query_github_api() {
                 log "ERROR" "Invalid JSON response from GitHub API"
                 return 1
             fi
+
+            api_response=$(echo "$api_response" | jq '. + {_source: "github"}')   # add source info
+            
             # Cache the response with a timestamp
             local new_cache_data
             new_cache_data=$(jq -n --argjson data "$api_response" --arg time "$current_time" \
@@ -131,13 +168,24 @@ query_github_api() {
     
 }
 
+# TODO: Add caching. 
 process_asset_data() {
     local api_response="$1"
-    local system_arch=$(uname -m)
-    local os_type=$(uname -s)
-    local libc_type="unknown"      
-    local bit_arch=$(getconf LONG_BIT)
-    local distro=$(grep '^ID=' /etc/os-release | cut -d'=' -f2 | tr -d '"')
+    local repo="$2"
+    local version="$3"
+    local REPO_CACHE_DIR=$(echo "$repo" | sed 's|/|_|g')
+    local repo version
+    read -r repo version < <(echo "$PROCESSED_CACHE" | jq -r '.repo, .version')
+
+    local PROCESSED_CACHE="${ASSET_CACHE_DIR}/${REPO_CACHE_DIR}/processed-{REPO_CACHE_DIR}-${version}-asset-cache.json"
+    if [[ -n "$PROCESSED_CACHE" ]]; then
+        local cached_repo cached_version
+        read -r cached_repo cached_version < <(echo "$PROCESSED_CACHE" | jq -r '.repo, .version')
+        if [[ "$cached_repo" == "$repo" && "$cached_version" == "$version" ]]; then
+            echo "$PROCESSED_CACHE"
+            return 0
+        fi
+    fi
 
     # Initialize arrays 
     local chosen_asset=""
@@ -161,34 +209,23 @@ process_asset_data() {
         [Pp][Pp][Cc]|[Pp][Pp][Cc]64|[Rr][Ii][Ss][Cc][Vv]|[Ss]390[Xx]|[Mm]ips|[Mm]ips64"
     )
 
-    # Detect libc type
-    if [[ "$os_type" == "Linux" ]]; then
-        if ldd --version 2>&1 | grep -qE "musl"; then
-            libc_type="musl"
-        elif ldd --version 2>&1 | grep -qE "GNU|GLIBC"; then
-            libc_type="gnu"
-        fi
-    fi
-
     while IFS= read -r asset_info; do
         name=$(echo "$asset_info" | jq -r '.name')
         url=$(echo "$asset_info" | jq -r '.url')
+        version=$(echo "$api_response" | jq -r '.tag_name')
+        repo=$(echo "$api_response" | jq -r '.url' | cut -d'/' -f4-5)
 
         if [[ "$name" =~ ${EXCLUDED_PATTERNS[$system_arch]} ]]; then
-            [[ ${#excluded_assets[@]} -gt 0 ]] && excluded_assets+=(",")
             excluded_assets+=("{\"name\":\"$name\",\"reason\":\"excluded pattern\",\"url\":\"$url\"}")
             continue    
         elif [[ "$name" =~ [sS]ource[._-?][Cc]ode ]]; then
-            [[ ${#source_files[@]} -gt 0 ]] && source_files+=(",")
             source_files+=("{\"name\":\"$name\",\"url\":\"$url\"}")
             excluded_assets+=("{\"name\":\"$name\",\"reason\":\"source code archive\",\"url\":\"$url\"}")
             continue
         elif [[ "$name" =~ ^completions[^/]*\.(tar\.gz|tgz)$ ]]; then
-            [[ ${#completions_files[@]} -gt 0 ]] && completions_files+=(",")
             completions_files+=("{\"name\":\"$name\",\"url\":\"$url\"}")
             excluded_assets+=("{\"name\":\"$name\",\"reason\":\"completions files\",\"url\":\"$url\"}")
         elif [[ "$name" =~ ^man[^/]*\.(tar\.gz|tgz)$ ]]; then
-            [[ ${#man_files[@]} -gt 0 ]] && man_files+=(",")
             man_files+=("{\"name\":\"$name\",\"url\":\"$url\"}")
             excluded_assets+=("{\"name\":\"$name\",\"reason\":\"man files\",\"url\":\"$url\"}")
         else
@@ -217,7 +254,6 @@ process_asset_data() {
             [[ "$distro" == "fedora" && "$name" =~ fedora ]] && ((score+=25)) && reason+="fedora matched on $distro (+25); "
 
             local asset_json="{\"name\":\"$name\",\"score\":$score,\"reason\":\"${reason%%; }\",\"url\":\"$url\"}"
-            [[ ${#viable_assets[@]} -gt 0 ]] && viable_assets+=(",")
             viable_assets+=("$asset_json")
             
             if [[ $score -gt $chosen_score ]]; then
@@ -229,13 +265,23 @@ process_asset_data() {
     done < <(echo "$api_response" | jq -r '.assets[] | {name: .name, url: .browser_download_url} | @json')
 
     # Construct the final JSON with proper formatting
+    # Set existence flags
+    local has_manfiles=false
+    local has_completions=false
+    local has_source=false
+    [[ ${#man_files[@]} -gt 0 ]] && has_manfiles=true
+    [[ ${#completions_files[@]} -gt 0 ]] && has_completions=true
+    [[ ${#source_files[@]} -gt 0 ]] && has_source=true
+
     echo "{
+        \"repo\": \"${repo}\",
+        \"version\": \"${version}\",
         \"chosen\": ${chosen_asset:-null},
-        \"viable\": [${viable_assets[*]}],
-        \"excluded\": [${excluded_assets[*]}],
-        \"source\": [${source_files[*]}],
-        \"man\": [${man_files[*]}],
-        \"completions\": [${completions_files[*]}]
+        \"viable\": [$(IFS=,; echo "${viable_assets[*]}")],
+        \"excluded\": [$(IFS=,; echo "${excluded_assets[*]}")],
+        \"source\": [$(IFS=,; echo "${source_files[*]}")],
+        \"man\": [$(IFS=,; echo "${man_files[*]}")],
+        \"completions\": [$(IFS=,; echo "${completions_files[*]}")]
     }" | jq '.'
 }
 
@@ -282,10 +328,20 @@ process_api_response() {
             select(. != $current) | first' ;;
             
         "completions")
-            process_asset_data "$api_response" | jq -r '.completions[] | "\(.name)\t\(.url)"' ;;
+            process_asset_data "$api_response" | jq -r '
+                if (.completions | length) == 0 then
+                    empty
+                else 
+                    .completions[] | "\(.name)\t\(.url)"
+                end' ;;
         
         "man-files")
-            process_asset_data "$api_response" | jq -r '.man[] | "\(.name)\t\(.url)"' ;;
+            process_asset_data "$api_response" | jq -r '
+                if (.man | length) == 0 then
+                    empty
+                else 
+                    .man[] | "\(.name)\t\(.url)"
+                end' ;;
 
         *)
             log "ERROR" "Unknown operation $operation" 
@@ -293,37 +349,389 @@ process_api_response() {
     esac
 }
 
+download_asset() {
+    local repo_name="$1"
+    local asset_download_url="$2"
+    local output_file="$3"
+    local asset_name=$(basename "$asset_download_url")
+    local cache_dir="${ASSET_CACHE_DIR}/${repo_name}"
+    local cached_asset="${cache_dir}/${asset_name}"
+    local metadata_file="${cached_asset}.metadata"
+
+    # Ensure the cache directory exists
+    mkdir -p "$cache_dir"
+
+    # Check if asset is already cached
+     if [[ -f "$cached_asset" && -f "$metadata_file" ]]; then
+        local cached_url=$(jq -r '.url' "$metadata_file")
+        local cached_hash=$(jq -r '.hash' "$metadata_file")
+        local current_hash=$(sha256sum "$cached_asset" | awk '{print $1}')
+
+        if [[ "$cached_url" == "$asset_download_url" && "$current_hash" == "$cached_hash" ]]; then
+            echo "Using cached asset: $cached_asset"
+            # Copy cached asset to output location if different
+            if [[ "$cached_asset" != "$output_file" ]]; then
+                cp "$cached_asset" "$output_file"
+            fi
+            return 0
+        fi
+    fi
+
+    # Download the asset
+    echo "Downloading asset: $asset_download_url"
+    curl -sSL -o "$output_file" "$asset_download_url" || { echo "Failed to download asset." >&2; return 1; }
+
+    # Cache the downloaded asset
+    cp "$output_file" "$cached_asset"
+
+    # Create metadata file
+    local hash=$(sha256sum "$cached_asset" | awk '{print $1}')
+    local date_created=$(date -Iseconds)
+    jq -n \
+            --arg url "$asset_download_url" \
+            --arg hash "$hash" \
+            --arg date_created "$date_created" \
+            '{url: $url, hash: $hash, date_created: $date_created}' > "$metadata_file"
+
+    echo "Downloaded and cached: $cached_asset"
+    return 0
+}
+
+extract_package() {
+    local package_archive="$1"
+    local extract_dir="$2"
+
+    # Check if archive exists
+    if [[ ! -f "$package_archive" ]]; then
+        echo "Error: Package archive does not exist: $package_archive" >&2
+        return 1
+    fi
+
+    # Create extraction directory if it doesn't exist
+    mkdir -p "$extract_dir"
+
+    # Determine archive type and extract
+    local extract_cmd
+    case "$package_archive" in
+        *.tar.gz|*.tgz) extract_cmd="tar -xzf" ;;
+        *.zip) extract_cmd="unzip -q" ;;
+        *) echo "Error: Unsupported archive type for $package_archive" >&2; return 1 ;;
+    esac
+
+    # Perform extraction with detailed error logging
+    if ! $extract_cmd "$package_archive" -C "$extract_dir"; then
+        echo "Error: Failed to extract $package_archive" >&2
+        return 1
+    fi
+
+    echo "Extraction complete: $extract_dir"
+    return 0
+}
+
+validate_binary() {
+    local binary_path="$1"
+    local system_info=$(uname -m)
+
+    # Find the executable
+    local executable
+    executable=$(find "$binary_path" -type f -executable -print -quit)
+    if [[ -z "$executable" ]]; then
+        echo "Error: No executable binary found" >&2
+        return 1
+    fi
+
+    # Verify executable is actually a binary
+    local file_type
+    file_type=$(file -b "$executable")
+    if [[ "$file_type" != *"ELF"* ]] || [[ "$file_type" != *"Linux"* ]]; then
+        echo "Error: Incompatible binary. Only Linux ELF binaries are supported." >&2
+        return 1
+    fi
+
+    # Check for system-specific exclusions (Darwin, FreeBSD, OpenBSD)
+    if [[ "$file_type" == *"Mach-O"* ]] || [[ "$file_type" == *"FreeBSD"* ]] || [[ "$file_type" == *"OpenBSD"* ]]; then
+        echo "Error: Incompatible binary for Darwin/BSD systems." >&2
+        return 1
+    fi
+
+    # Convert architecture names for comparison
+    local file_arch
+    if [[ "$file_type" == *"x86-64"* ]]; then
+        file_arch="x86_64"
+    elif [[ "$file_type" == *"aarch64"* ]]; then
+        file_arch="arm64"
+    else
+        file_arch=$(echo "$file_type" | grep -o -E 'arm(v[0-9])?|x86[-_]64|amd64|i386|i686')
+    fi
+
+    # Verify the binary is compatible with Linux (ELF format)
+    if [[ "$file_type" != *"ELF"* ]] && [[ "$file_type" != *"Linux"* ]]; then
+        echo "Error: Binary is not a Linux executable" >&2
+        echo "Binary details: $file_type" >&2
+        return 1
+    fi
+
+    # Map architecture for comparison
+    local file_arch
+    if [[ "$file_type" == *"x86-64"* ]]; then
+        file_arch="x86_64"
+    elif [[ "$file_type" == *"aarch64"* ]]; then
+        file_arch="arm64"
+    else
+        file_arch=$(echo "$file_type" | grep -o -E 'arm(v[0-9])?|x86[_-]64|amd64|i386|i686')
+    fi
+
+    # Verify architecture compatibility
+    if [[ "$file_arch" != "$system_arch" ]] && [[ "$file_arch" != "amd64" ]]; then
+        echo "Error: Binary architecture ($file_arch) incompatible with system architecture ($system_arch)." >&2
+        return 1
+    fi
+
+    # Check dependencies if dynamically linked
+    local ldd_output
+    ldd_output=$(ldd "$executable" 2>&1)
+    if [[ $? -eq 0 && "$ldd_output" == *"not found"* ]]; then
+        echo "Error: Missing dependencies for $executable:" >&2
+        echo "$ldd_output" >&2
+        return 1
+    fi
+
+    echo "Binary $executable is valid and compatible."
+    return 0
+}
+
+get_dependencies() {
+    local binary_path="$1"
+    
+    # Check if ldd is available
+    if command -v ldd &> /dev/null; then
+        local deps=$(ldd "$binary_path" 2>/dev/null | grep "=>" | awk '{print $1}')
+        echo "$deps"
+        return 0
+    fi
+    
+    echo "Warning: ldd not available to check dependencies" >&2
+    return 1
+}
+
+install_man_pages_completions() {
+    local extract_dir="$1"
+    local package_name=$(basename "$extract_dir")
+    
+    # Create completion directories if they don't exist
+    local bash_comp_dir="$HOME/.local/share/bash-completion/completions"
+    local zsh_comp_dir="$HOME/.local/share/zsh/site-functions"
+    local man_dir="$HOME/.local/share/man"
+    
+    mkdir -p "$bash_comp_dir" "$zsh_comp_dir" "$man_dir"
+    
+    # Find all potential completions and man pages in the extracted directory
+    local found_files=$(find "$extract_dir" \( -name "*completion*" -o -name "*completions*" -o -name "*.1" -o -name "*.1.gz" \) -type f)
+    
+    if [ -z "$found_files" ]; then
+        echo "No completions or man pages found in extracted files" >&2
+        return 0
+    fi
+    
+    local installed_count=0
+    while IFS= read -r file; do
+        case "$file" in
+            *bash-completion*|*bash_completion*|*completion.bash|*completions.bash)
+                echo "Installing bash completion: $file" >&2
+                cp "$file" "$bash_comp_dir/$package_name"
+                ((installed_count++))
+                ;;
+            *zsh-completion*|*zsh_completion*|*_*)
+                echo "Installing zsh completion: $file" >&2
+                cp "$file" "$zsh_comp_dir/_$package_name"
+                ((installed_count++))
+                ;;
+            *.1|*.1.gz)
+                local section_dir="$man_dir/man1"
+                echo "Installing man page: $file to $section_dir" >&2
+                mkdir -p "$section_dir"
+                cp "$file" "$section_dir/"
+                ((installed_count++))
+                ;;
+        esac
+    done <<< "$found_files"
+    
+    if [ $installed_count -gt 0 ]; then
+        echo "Installed $installed_count completion/man files" >&2
+    else
+        echo "No completions or man pages found to install" >&2
+    fi
+    
+    return 0
+}
+
+## ---- for use in --file mode ----- ##### 
+clean_version() {
+    local version="$1"
+    # Remove 'v' prefix, any trailing non-numeric characters, and Ubuntu-specific suffixes
+    echo "$version" | sed -E 's/^v//; s/-[^-]*ubuntu[^-]*//; s/-$//; s/[^0-9.]//g'
+}
+
+# TODO: Improve caching. 
+compare_versions() {
+    local input="$1"
+    local binary_name
+    local gh_version="$2"
+    local cache_dir="${CACHE_DIR}/repos/${repo}"
+    local apt_version
+
+    if [[ "$input" == *"|"* ]]; then    # if input contails a | this is parsed differently. 
+        repo_name=$(echo "$input" | cut -d'|' -f1 | tr -d ' ')
+        binary_name=$(echo "$input" | cut -d'|' -f2 | tr -d ' ')
+    else
+        repo_name="$input"
+        binary_name=${repo_name##*/}
+    fi
+
+    local comparison
+    gh_version=$(clean_version "$gh_version")
+    apt_version=$(apt-cache policy "$binary_name" 2>/dev/null | grep -oP 'Candidate: \K[^ ]+' | head -n1)
+    apt_version=$(clean_version "$apt_version")
+    if [ -z "$apt_version" ]; then
+        echo "github"
+        return 0
+    elif [ -z "$gh_version" ]; then
+        echo "apt"
+    elif [ "$(printf '%s\n' "$gh_version" "$apt_version" | sort -V | head -n1)" = "$gh_version" ]; then
+            if [ "$gh_version" = "$apt_version" ]; then
+                echo "equal"
+            else
+                echo "apt"  # GitHub version is lower, so apt has the newer version
+            fi
+    else
+        echo "github"  # GitHub has the newer version
+    fi
+
+    # Update cache with version info
+    jq --arg apt "$apt_version" \
+       --arg comp "$comparison" \
+       --arg time "$(date +%s)" \
+       '. + {
+           apt_info: {
+               version: $apt,
+               comparison: $comp,
+               check_time: ($time | tonumber)
+           }
+       }' "$processed_cache" > "${processed_cache}.tmp" && \
+    mv "${processed_cache}.tmp" "$processed_cache"
+    echo "$comparison"
+    return 0
+}
+
 main() {
     local repo_name="$1"
 
     if ! api_response=$(query_github_api "$repo_name"); then
         log "ERROR" "Unable to fetch response"
-    fi 
-    
-    # Use process_api_response to get latest version
-    latest_version=$(process_api_response "latest-version" "$api_response")
-
-    # Fetch download url for an asset:
-    file="zoxide-0.9.6-i686-unknown-linux-musl.tar.gz"
-    download_url_for_asset=$(process_api_response "download-url" "$api_response" "$file")
-    raw_asset_data=$(process_asset_data "$api_response")
-    if [[ $? -ne 0 ]]; then
-        log "ERROR" "Unable to process"
+        return 1
     fi
-    #best_asset=$(process_api_response "choose-best-asset" "$api_response")
+    # # Use process_api_response to get latest version
+    # latest_version=$(process_api_response "latest-version" "$api_response")
+
+    # # Fetch download url for an asset:
+    # file="zoxide-0.9.6-i686-unknown-linux-musl.tar.gz"
+    # download_url_for_asset=$(process_api_response "download-url" "$api_response" "$file")
+    # raw_asset_data=$(process_asset_data "$api_response")
+    # if [[ $? -ne 0 ]]; then
+    #     log "ERROR" "Unable to process"
+    # fi
+    # best_asset=$(process_api_response "choose-best-asset" "$api_response")
     # assets=$(process_api_response "asset-names" "$api_response")
+    # best_asset_url=$(process_api_response "chosen-asset-url" "$api_response")
+    # completions=$(process_api_response "completions" "$api_response")
+    # if [[ -z "$completions" ]]; then
+    #     completions="not found"
+    # fi
+    # local response_source=$(echo "$api_response" | jq -r '._source')
+    # local completions_url=$(echo "$raw_asset_data" | jq -r '.completions[].url')
 
+    # # Print summary: 
+    # echo "Repo: $repo_name (Source: $response_source)"
+    # echo "Latest version: $latest_version"
+    # echo "Download URL for $file is $download_url_for_asset"
+    # echo "Best asset: $best_asset"
+    # echo "Best asset is at: $best_asset_url"
+    # echo "Assets: $assets"
+    # echo "Completions: $completions"
+    # echo "$completions_url"
+    # #echo "$raw_asset_data" | jq '.'
+    local repo_name="$1"
 
+    # if ! api_response=$(query_github_api "$repo_name"); then
+    #     log "ERROR" "Unable to fetch response"
+    #     return 1
+    # fi
 
-    # Print summary: 
-    echo "Repo: $repo_name"
-    echo "Latest version: $latest_version"
-    echo "Download URL for $file is $download_url_for_asset"
-    echo "Best asset: $best_asset"
-    echo "Assets: $assets"
-    echo "$raw_asset_data" | jq '.'
-    #echo "$api_response" | jq '.'
+    # # Get version directly from api_response (this doesn't need asset processing)
+    # latest_version=$(echo "$api_response" | jq -r '.tag_name | sub("^v"; "")')
+    
+    # # Process assets once
+    # local asset_data=$(process_asset_data "$api_response")
+    
+    # # Extract everything we need from the single processed result
+    # local best_asset=$(echo "$asset_data" | jq -r '.chosen.name')
+    # local best_asset_url=$(echo "$asset_data" | jq -r '.chosen.url')
+    # local completions=$(echo "$asset_data" | jq -r '
+    #     if (.completions | length) == 0 then
+    #         "not found"
+    #     else
+    #         .completions[].url
+    #     end')
+    # local response_source=$(echo "$api_response" | jq -r '._source')
+    # local asset_list=$(echo "$api_response" | jq -r '.assets[].name')
 
+    # # Print summary
+    # echo "Repo: $repo_name (Source: $response_source)"
+    # echo "Latest version: $latest_version"
+    # echo "Best asset: $best_asset"
+    # echo "Best asset is at: $best_asset_url"
+    # echo "Completions: $completions"
+    # echo "Name: $asset_list"
+    if ! api_response=$(query_github_api "$repo_name"); then
+        log "ERROR" "Unable to fetch response"
+        return 1
+    fi
+
+    # Get all system info up front
+    local system_arch=$(uname -m)
+    local os_type=$(uname -s)
+    local libc_type="unknown"      
+    local bit_arch=$(getconf LONG_BIT)
+    local distro=$(grep '^ID=' /etc/os-release | cut -d'=' -f2 | tr -d '"')
+
+    # Single jq pass - store root object first
+    eval "$(echo "$api_response" | jq -r --arg arch "$system_arch" \
+                                      --arg libc "$libc_type" \
+                                      --arg bits "$bit_arch" \
+                                      --arg distro "$distro" '
+        # Store root context
+        . as $root |
+        
+        # Scoring function
+        def score_asset($name):
+          0 +
+          (if $name | test("\\.tar\\.gz$") then 15 else 0 end) +
+          (if $name | test("[Ll]inux") then 10 else 0 end) +
+          (if $arch == "x86_64" and $name | test("x86[-_.]64|amd64") then 30 else 0 end);
+
+        # Process everything and output shell assignments
+        .assets
+        | map(. + {score: score_asset(.name)})
+        | sort_by(-.score)
+        | "version=\"\($root.tag_name | sub("^v"; ""))\"
+           best_asset=\"\(.[0].name)\"
+           best_url=\"\(.[0].browser_download_url)\"
+           completions=\"\(map(select(.name | startswith("completions"))) | if length > 0 then .[0].url else "not found" end)\"
+           source=\"\($root._source)\""
+    ')"
+
+    printf "Repo: %s (Source: %s)\nLatest version: %s\nBest asset: %s\nBest asset URL: %s\nCompletions: %s\n" \
+        "$repo_name" "$source" "$version" "$best_asset" "$best_url" "$completions"
 
 }
 
