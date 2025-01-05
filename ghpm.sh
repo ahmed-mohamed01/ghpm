@@ -402,7 +402,7 @@ download_asset() {
         current_hash=$(sha256sum "$cached_asset" | awk '{print $1}')
         
         if [[ -n "$cached_url" && -n "$cached_hash" && "$current_hash" == "$cached_hash" ]]; then
-                log "INFO" "Using cached asset: $cached_asset"
+                #log "INFO" "Using cached asset: $cached_asset"
                 echo "$cached_asset"  # Return path to cached asset
                 return 0
             fi
@@ -410,11 +410,9 @@ download_asset() {
     
 
     # If we get here, we need to get/verify the URL and download
-    log "DEBUG" "Cache check failed or no cache found, proceeding with download"
     local asset_url
     if [[ "$asset_input" =~ ^https?:// ]]; then
         asset_url="$asset_input"
-        log "DEBUG" "Using direct URL: $asset_url"
     else
         # Find URL from processed assets cache
         if [[ ! -f "$PROCESSED_CACHE_PATH" ]]; then
@@ -493,78 +491,50 @@ extract_package() {
         return 1
     fi
 
-    echo "Extraction complete: $extract_dir"
+    #echo "$extract_dir"
     return 0
 }
 
 validate_binary() {
-    local binary_path="$1"
+    local given_path="$1"
+    local dependencies=()
 
     # Find the executable
-    local executable
-    executable=$(find "$binary_path" -type f -executable -print -quit)
-    if [[ -z "$executable" ]]; then
+    local binary_path
+    binary_path=$(find "$given_path" -type f -executable -print -quit)
+    if [[ -z "$binary_path" ]]; then
         log "ERROR" "No executable binary found"
         return 1
     fi
 
+    declare -A FILE_PATTERNS=(
+        [x86_64]="ELF.*x86[-_ ]64.*LSB.*" 
+        [aarch64]="ELF.*aarch64.*LSB.*"
+    )
+
     # Verify executable is actually a binary
-    local file_type
-    file_type=$(file -b "$executable")
-    if [[ "$file_type" != *"ELF"* ]] || [[ "$file_type" != *"Linux"* ]]; then
-        log "ERROR" "Incompatible binary. Only Linux ELF binaries are supported."
+    local file_info
+    file_info=$(file -b "$binary_path")
+    if [[ ! "$file_info" =~ ${FILE_PATTERNS[$SYSTEM_ARCH]} ]]; then
+        log "ERROR" "Incompatible binary. Expected pattern: ${FILE_PATTERNS[$SYSTEM_ARCH]} but got: $file_info"
         return 1
     fi
-
-    # Check for system-specific exclusions (Darwin, FreeBSD, OpenBSD)
-    if [[ "$file_type" == *"Mach-O"* ]] || [[ "$file_type" == *"FreeBSD"* ]] || [[ "$file_type" == *"OpenBSD"* ]]; then
-        log "ERROR" "Incompatible binary for Darwin/BSD systems."
-        return 1
-    fi
-
-    # Convert architecture names for comparison
-    local file_arch
-    if [[ "$file_type" == *"x86-64"* ]]; then
-        file_arch="x86_64"
-    elif [[ "$file_type" == *"aarch64"* ]]; then
-        file_arch="arm64"
-    else
-        file_arch=$(echo "$file_type" | grep -o -E 'arm(v[0-9])?|x86[-_]64|amd64|i386|i686')
-    fi
-
-    # Verify the binary is compatible with Linux (ELF format)
-    if [[ "$file_type" != *"ELF"* ]] && [[ "$file_type" != *"Linux"* ]]; then
-        log "ERROR" "Binary is not a Linux executable"
-        log "ERROR" "Binary details: $file_type"
-        return 1
-    fi
-
-    # Map architecture for comparison
-    local file_arch
-    if [[ "$file_type" == *"x86-64"* ]]; then
-        file_arch="x86_64"
-    elif [[ "$file_type" == *"aarch64"* ]]; then
-        file_arch="arm64"
-    else
-        file_arch=$(echo "$file_type" | grep -o -E 'arm(v[0-9])?|x86[_-]64|amd64|i386|i686')
-    fi
-
-    # Verify architecture compatibility
-    if [[ "$file_arch" != "$system_arch" ]] && [[ "$file_arch" != "amd64" ]]; then
-        log "ERROR" "Binary architecture ($file_arch) incompatible with system architecture ($system_arch)." >&2
-        return 1
-    fi
-
     # Check dependencies if dynamically linked
-    local ldd_output
-    ldd_output=$(ldd "$executable" 2>&1)
-    if [[ $? -eq 0 && "$ldd_output" == *"not found"* ]]; then
-        log "ERROR" "Missing dependencies for $executable:" >&2
-        log "ERROR" "$ldd_output" >&2
-        return 1
+    if ldd "$binary_path" &>/dev/null; then
+        local missing_deps
+        missing_deps=$(ldd "$binary_path" | grep "not found")
+        if [[ -n "$missing_deps" ]]; then
+            log "ERROR" "Missing dependencies for $binary_path:\n$missing_deps"
+            return 1
+        fi
+        # Collect dependencies
+        dependencies=($(ldd "$binary_path" | awk '/=>/ {print $3}' | sort -u))
+        export DEPENDENCIES=("${dependencies[@]}")
+    else
+        log "INFO" "Binary is statically linked or does not require dynamic dependencies."
     fi
 
-    echo "Binary $executable is valid and compatible."
+    echo "$binary_path"
     return 0
 }
 
