@@ -1,6 +1,6 @@
 #! /usr/bin/env bash
 
-#set -euo pipefail      # set -e error handling, -u undefined variable protection -o pipefail piepline faulure catching. 
+set -euo pipefail      # set -e error handling, -u undefined variable protection -o pipefail piepline faulure catching. 
 DISPLAY_ISSUES=true    # make log output visible. 
 
 # Configure folders
@@ -9,21 +9,25 @@ INSTALL_DIR="${PWD}/.local/bin"
 
 CACHE_DIR="${DATA_DIR}/cache"
 CACHE_FILE="${CACHE_DIR}/api-cache.json"
-ASSET_CACHE_DIR="${CACHE_DIR}/assets"
+ASSET_CACHE_DIR="${CACHE_DIR}/repos"
 
 DB_DIR="${DATA_DIR}/db"
 DB_FILE="${DB_DIR}/installed.json"
 
-# readonly PROCESSED_CACHE_DIR="${ASSET_CACHE_DIR}/%s"         # Just the dir
-# readonly PROCESSED_CACHE_FILE="%s-%s-asset-cache.json"       # Just the filename
+get_cache_paths() {
+    local repo_name="$1"
+    local repo_dir="$(echo "$repo_name" | sed 's|/|_|g')"
+    
+    # Base paths for the repo
+    REPO_CACHE_DIR="${ASSET_CACHE_DIR}/${repo_dir}"
+    REPO_ASSETS_DIR="${REPO_CACHE_DIR}/assets"
+    REPO_EXTRACTED_DIR="${REPO_CACHE_DIR}/extracted"
+    PROCESSED_CACHE_PATH="${REPO_CACHE_DIR}/processed-${repo_dir}-assets-cache.json"
 
-# # Helper function
-# get_processed_cache_path() {
-#     local repo_dir="$(echo "$1" | sed 's|/|_|g')"
-#     local version="$2"
-#     local cache_dir=$(printf "$PROCESSED_CACHE_DIR" "$repo_dir")
-#     printf "$cache_dir/%s" "$(printf "$PROCESSED_CACHE_FILE" "$repo_dir" "$version")"
-# }
+    # Create the directory structure
+    mkdir -p "$REPO_CACHE_DIR" "$REPO_ASSETS_DIR" "$REPO_EXTRACTED_DIR"
+}
+
 
 # Colors to be used in output
 declare -a ISSUES=()
@@ -171,23 +175,32 @@ query_github_api() {
 # TODO: Add caching. 
 process_asset_data() {
     local api_response="$1"
-    local repo="$2"
-    local version="$3"
-    local REPO_CACHE_DIR=$(echo "$repo" | sed 's|/|_|g')
-    local repo version
-    read -r repo version < <(echo "$PROCESSED_CACHE" | jq -r '.repo, .version')
 
-    local PROCESSED_CACHE="${ASSET_CACHE_DIR}/${REPO_CACHE_DIR}/processed-{REPO_CACHE_DIR}-${version}-asset-cache.json"
-    if [[ -n "$PROCESSED_CACHE" ]]; then
-        local cached_repo cached_version
-        read -r cached_repo cached_version < <(echo "$PROCESSED_CACHE" | jq -r '.repo, .version')
-        if [[ "$cached_repo" == "$repo" && "$cached_version" == "$version" ]]; then
-            echo "$PROCESSED_CACHE"
+    # 1. Extract repo and version from API response and construct cache path
+    local repo version
+    if ! read -r repo version < <(echo "$api_response" | jq -r '
+        .html_url as $html | $html | capture("github\\.com/(?<repo>[^/]+/[^/]+)/releases/tag/(?<version>[^/]+)") |
+        "\(.repo)\t\(.version)"
+    '); then
+        log "ERROR" "Failed to extract repo and version from API response"
+        return 1
+    fi
+    # set the cache path
+    get_cache_paths "$repo"
+    local cache_file="$PROCESSED_CACHE_PATH"
+
+    # 2. Check if valid cache exists and matches current request
+    if [[ -f "$cache_file" ]]; then
+        if cached_data=$(jq -r --arg repo "$repo" --arg version "$version" \
+            'select(.repo == $repo and .version == $version)' "$cache_file" 2>/dev/null) && \
+            [[ "$cached_data" != "null" ]] && [[ -n "$cached_data" ]]; then
+            echo "$cached_data"
             return 0
         fi
     fi
+    
 
-    # Initialize arrays 
+    # 3. If no cache matches, process the repo and output a json. 
     local chosen_asset=""
     local chosen_score=0
     local chosen_reason=""
@@ -212,8 +225,6 @@ process_asset_data() {
     while IFS= read -r asset_info; do
         name=$(echo "$asset_info" | jq -r '.name')
         url=$(echo "$asset_info" | jq -r '.url')
-        version=$(echo "$api_response" | jq -r '.tag_name')
-        repo=$(echo "$api_response" | jq -r '.url' | cut -d'/' -f4-5)
 
         if [[ "$name" =~ ${EXCLUDED_PATTERNS[$system_arch]} ]]; then
             excluded_assets+=("{\"name\":\"$name\",\"reason\":\"excluded pattern\",\"url\":\"$url\"}")
@@ -273,16 +284,34 @@ process_asset_data() {
     [[ ${#completions_files[@]} -gt 0 ]] && has_completions=true
     [[ ${#source_files[@]} -gt 0 ]] && has_source=true
 
-    echo "{
+    local final_json
+    final_json=$(echo "{
         \"repo\": \"${repo}\",
         \"version\": \"${version}\",
-        \"chosen\": ${chosen_asset:-null},
-        \"viable\": [$(IFS=,; echo "${viable_assets[*]}")],
-        \"excluded\": [$(IFS=,; echo "${excluded_assets[*]}")],
-        \"source\": [$(IFS=,; echo "${source_files[*]}")],
-        \"man\": [$(IFS=,; echo "${man_files[*]}")],
-        \"completions\": [$(IFS=,; echo "${completions_files[*]}")]
-    }" | jq '.'
+        \"chosen_asset\": ${chosen_asset:-null},
+        \"viable_assets\": [$(IFS=,; echo "${viable_assets[*]:-}")],
+        \"excluded_assets\": [$(IFS=,; echo "${excluded_assets[*]:-}")],
+        \"source_files\": [$(IFS=,; echo "${source_files[*]:-}")],
+        \"has_man_files\": ${has_manfiles},
+        \"has_completions_files\": ${has_completions},
+        \"has_source_files\": ${has_source},
+        \"man_files\": [$(IFS=,; echo "${man_files[*]:-}")],
+        \"completions_files\": [$(IFS=,; echo "${completions_files[*]:-}")]
+    }" | jq '.')
+
+    # 4. Save processed data to cache 
+    if [[ -n "$final_json" ]]; then
+        if ! { echo "$final_json" > "${cache_file}.tmp" && mv "${cache_file}.tmp" "$cache_file"; }; then
+            log "WARNING" "Failed to write or move cache file"
+            rm -f "${cache_file}.tmp"  # Clean up temp file
+            return 1
+        fi
+        echo "$final_json"
+        return 0
+    else
+        log "WARNING" "Failed to generate valid JSON output"
+        return 1
+    fi
 }
 
 process_api_response() {
@@ -351,49 +380,89 @@ process_api_response() {
 
 download_asset() {
     local repo_name="$1"
-    local asset_download_url="$2"
-    local output_file="$3"
-    local asset_name=$(basename "$asset_download_url")
-    local cache_dir="${ASSET_CACHE_DIR}/${repo_name}"
-    local cached_asset="${cache_dir}/${asset_name}"
+    local asset_input="$2"
+    get_cache_paths "$repo_name"
+
+    local asset_name
+    # Determine asset name first
+    if [[ "$asset_input" =~ ^https?:// ]]; then
+        asset_name=$(basename "$asset_input")
+    else
+        asset_name="$asset_input"
+    fi
+
+    # Check cache first - before any other processing
+    local cached_asset="${REPO_ASSETS_DIR}/${asset_name}"
     local metadata_file="${cached_asset}.metadata"
 
-    # Ensure the cache directory exists
-    mkdir -p "$cache_dir"
-
-    # Check if asset is already cached
-     if [[ -f "$cached_asset" && -f "$metadata_file" ]]; then
-        local cached_url=$(jq -r '.url' "$metadata_file")
-        local cached_hash=$(jq -r '.hash' "$metadata_file")
-        local current_hash=$(sha256sum "$cached_asset" | awk '{print $1}')
-
-        if [[ "$cached_url" == "$asset_download_url" && "$current_hash" == "$cached_hash" ]]; then
-            echo "Using cached asset: $cached_asset"
-            # Copy cached asset to output location if different
-            if [[ "$cached_asset" != "$output_file" ]]; then
-                cp "$cached_asset" "$output_file"
+    if [[ -f "$cached_asset" && -f "$metadata_file" ]]; then
+        local cached_url cached_hash current_hash
+        cached_url=$(jq -r '.url' "$metadata_file")
+        cached_hash=$(jq -r '.hash' "$metadata_file")
+        current_hash=$(sha256sum "$cached_asset" | awk '{print $1}')
+        
+        if [[ -n "$cached_url" && -n "$cached_hash" && "$current_hash" == "$cached_hash" ]]; then
+                log "INFO" "Using cached asset: $cached_asset"
+                echo "$cached_asset"  # Return path to cached asset
+                return 0
             fi
-            return 0
+    fi
+    
+
+    # If we get here, we need to get/verify the URL and download
+    log "DEBUG" "Cache check failed or no cache found, proceeding with download"
+    local asset_url
+    if [[ "$asset_input" =~ ^https?:// ]]; then
+        asset_url="$asset_input"
+        log "DEBUG" "Using direct URL: $asset_url"
+    else
+        # Find URL from processed assets cache
+        if [[ ! -f "$PROCESSED_CACHE_PATH" ]]; then
+            log "WARNING" "No processed assets cache found for ${repo_name}. fetching from github api.."
+            if ! process_asset_data "$(query_github_api "$repo_name")"; then
+                log "ERROR" "Failed to process asset data"
+                return 1
+            fi
+        fi
+        
+        # Extract URL for the given filename
+        asset_url=$(jq -r --arg name "$asset_input" '.viable_assets[] | select(.name == $name) | .url' "$PROCESSED_CACHE_PATH")
+        if [[ -z "$asset_url" || "$asset_url" == "null" ]]; then
+            log "ERROR" "Asset ${asset_input} not found in processed cache"
+            return 1
         fi
     fi
 
     # Download the asset
-    echo "Downloading asset: $asset_download_url"
-    curl -sSL -o "$output_file" "$asset_download_url" || { echo "Failed to download asset." >&2; return 1; }
+    log "INFO" "Downloading asset: $asset_url"
+    if ! curl -sSL -o "${cached_asset}.tmp" "$asset_url"; then
+        rm -f "${cached_asset}.tmp"
+        log "ERROR" "Failed to download asset"
+        return 1
+    fi
 
-    # Cache the downloaded asset
-    cp "$output_file" "$cached_asset"
-
-    # Create metadata file
-    local hash=$(sha256sum "$cached_asset" | awk '{print $1}')
+    # Create metadata
+    local hash=$(sha256sum "${cached_asset}.tmp" | awk '{print $1}')
     local date_created=$(date -Iseconds)
-    jq -n \
-            --arg url "$asset_download_url" \
+    if ! jq -n \
+            --arg url "$asset_url" \
             --arg hash "$hash" \
             --arg date_created "$date_created" \
-            '{url: $url, hash: $hash, date_created: $date_created}' > "$metadata_file"
+            '{url: $url, hash: $hash, date_created: $date_created}' > "${metadata_file}.tmp"; then
+        rm -f "${cached_asset}.tmp" "${metadata_file}.tmp"
+        log "ERROR" "Failed to create metadata"
+        return 1
+    fi
 
-    echo "Downloaded and cached: $cached_asset"
+    # Move files to final location
+    if ! { mv "${cached_asset}.tmp" "$cached_asset" && mv "${metadata_file}.tmp" "$metadata_file"; }; then
+        rm -f "${cached_asset}.tmp" "${metadata_file}.tmp" "$cached_asset" "$metadata_file"
+        log "ERROR" "Failed to move files to final location"
+        return 1
+    fi
+
+    log "INFO" "Downloaded and cached: $cached_asset"
+    echo "$cached_asset"  # Return path to downloaded asset
     return 0
 }
 
@@ -430,13 +499,12 @@ extract_package() {
 
 validate_binary() {
     local binary_path="$1"
-    local system_info=$(uname -m)
 
     # Find the executable
     local executable
     executable=$(find "$binary_path" -type f -executable -print -quit)
     if [[ -z "$executable" ]]; then
-        echo "Error: No executable binary found" >&2
+        log "ERROR" "No executable binary found"
         return 1
     fi
 
@@ -444,13 +512,13 @@ validate_binary() {
     local file_type
     file_type=$(file -b "$executable")
     if [[ "$file_type" != *"ELF"* ]] || [[ "$file_type" != *"Linux"* ]]; then
-        echo "Error: Incompatible binary. Only Linux ELF binaries are supported." >&2
+        log "ERROR" "Incompatible binary. Only Linux ELF binaries are supported."
         return 1
     fi
 
     # Check for system-specific exclusions (Darwin, FreeBSD, OpenBSD)
     if [[ "$file_type" == *"Mach-O"* ]] || [[ "$file_type" == *"FreeBSD"* ]] || [[ "$file_type" == *"OpenBSD"* ]]; then
-        echo "Error: Incompatible binary for Darwin/BSD systems." >&2
+        log "ERROR" "Incompatible binary for Darwin/BSD systems."
         return 1
     fi
 
@@ -466,8 +534,8 @@ validate_binary() {
 
     # Verify the binary is compatible with Linux (ELF format)
     if [[ "$file_type" != *"ELF"* ]] && [[ "$file_type" != *"Linux"* ]]; then
-        echo "Error: Binary is not a Linux executable" >&2
-        echo "Binary details: $file_type" >&2
+        log "ERROR" "Binary is not a Linux executable"
+        log "ERROR" "Binary details: $file_type"
         return 1
     fi
 
@@ -483,7 +551,7 @@ validate_binary() {
 
     # Verify architecture compatibility
     if [[ "$file_arch" != "$system_arch" ]] && [[ "$file_arch" != "amd64" ]]; then
-        echo "Error: Binary architecture ($file_arch) incompatible with system architecture ($system_arch)." >&2
+        log "ERROR" "Binary architecture ($file_arch) incompatible with system architecture ($system_arch)." >&2
         return 1
     fi
 
@@ -491,8 +559,8 @@ validate_binary() {
     local ldd_output
     ldd_output=$(ldd "$executable" 2>&1)
     if [[ $? -eq 0 && "$ldd_output" == *"not found"* ]]; then
-        echo "Error: Missing dependencies for $executable:" >&2
-        echo "$ldd_output" >&2
+        log "ERROR" "Missing dependencies for $executable:" >&2
+        log "ERROR" "$ldd_output" >&2
         return 1
     fi
 
@@ -609,11 +677,13 @@ compare_versions() {
 
     # Update cache with version info
     jq --arg apt "$apt_version" \
+       --arg gh "$gh_version" \
        --arg comp "$comparison" \
        --arg time "$(date +%s)" \
        '. + {
-           apt_info: {
-               version: $apt,
+           version_info: {
+               github: $gh
+               apt: $apt,
                comparison: $comp,
                check_time: ($time | tonumber)
            }
@@ -630,108 +700,57 @@ main() {
         log "ERROR" "Unable to fetch response"
         return 1
     fi
-    # # Use process_api_response to get latest version
-    # latest_version=$(process_api_response "latest-version" "$api_response")
-
-    # # Fetch download url for an asset:
-    # file="zoxide-0.9.6-i686-unknown-linux-musl.tar.gz"
-    # download_url_for_asset=$(process_api_response "download-url" "$api_response" "$file")
-    # raw_asset_data=$(process_asset_data "$api_response")
-    # if [[ $? -ne 0 ]]; then
-    #     log "ERROR" "Unable to process"
-    # fi
-    # best_asset=$(process_api_response "choose-best-asset" "$api_response")
-    # assets=$(process_api_response "asset-names" "$api_response")
-    # best_asset_url=$(process_api_response "chosen-asset-url" "$api_response")
-    # completions=$(process_api_response "completions" "$api_response")
-    # if [[ -z "$completions" ]]; then
-    #     completions="not found"
-    # fi
-    # local response_source=$(echo "$api_response" | jq -r '._source')
-    # local completions_url=$(echo "$raw_asset_data" | jq -r '.completions[].url')
-
-    # # Print summary: 
-    # echo "Repo: $repo_name (Source: $response_source)"
-    # echo "Latest version: $latest_version"
-    # echo "Download URL for $file is $download_url_for_asset"
-    # echo "Best asset: $best_asset"
-    # echo "Best asset is at: $best_asset_url"
-    # echo "Assets: $assets"
-    # echo "Completions: $completions"
-    # echo "$completions_url"
-    # #echo "$raw_asset_data" | jq '.'
-    local repo_name="$1"
-
-    # if ! api_response=$(query_github_api "$repo_name"); then
-    #     log "ERROR" "Unable to fetch response"
-    #     return 1
-    # fi
-
-    # # Get version directly from api_response (this doesn't need asset processing)
-    # latest_version=$(echo "$api_response" | jq -r '.tag_name | sub("^v"; "")')
+    # Get version directly from api_response (this doesn't need asset processing)
+    latest_version=$(echo "$api_response" | jq -r '.tag_name | sub("^v"; "")')
+    local repo version
+    #read -r repo version < <(echo "$api_response" | jq -r '[.url | split("/")[4:6] | join("/"), .tag_name] | @tsv')
     
-    # # Process assets once
-    # local asset_data=$(process_asset_data "$api_response")
+    #Process assets once
+    local asset_data=$(process_asset_data "$api_response")
     
-    # # Extract everything we need from the single processed result
-    # local best_asset=$(echo "$asset_data" | jq -r '.chosen.name')
-    # local best_asset_url=$(echo "$asset_data" | jq -r '.chosen.url')
-    # local completions=$(echo "$asset_data" | jq -r '
-    #     if (.completions | length) == 0 then
-    #         "not found"
-    #     else
-    #         .completions[].url
-    #     end')
-    # local response_source=$(echo "$api_response" | jq -r '._source')
-    # local asset_list=$(echo "$api_response" | jq -r '.assets[].name')
+    # Extract everything we need from the single processed result
+    local best_asset=$(echo "$asset_data" | jq -r '.chosen_asset.name')
+    local best_asset_url=$(echo "$asset_data" | jq -r '.chosen_asset.url')
+    local completions=$(echo "$asset_data" | jq -r '
+        if (.completions_files | length) == 0 then
+            "not found"
+        else
+            .completions_files[].url
+        end')
+    local response_source=$(echo "$api_response" | jq -r '._source')
+    local asset_list=$(echo "$api_response" | jq -r '.assets[].name')
 
-    # # Print summary
-    # echo "Repo: $repo_name (Source: $response_source)"
-    # echo "Latest version: $latest_version"
-    # echo "Best asset: $best_asset"
-    # echo "Best asset is at: $best_asset_url"
-    # echo "Completions: $completions"
-    # echo "Name: $asset_list"
-    if ! api_response=$(query_github_api "$repo_name"); then
-        log "ERROR" "Unable to fetch response"
+    # Download a file
+    if ! downloaded_asset=$(download_asset "$repo_name" "$best_asset_url"); then
+        log "ERROR" "Failed to download asset"
         return 1
     fi
+    get_cache_paths "$repo_name"
+    # Extract the downloaded asset to the repo's extraction directory
+    if ! extract_package "$downloaded_asset" "$REPO_EXTRACTED_DIR"; then
+        log "ERROR" "Failed to extract package"
+        return 1
+    fi
+    
+    if validate_binary "$REPO_EXTRACTED_DIR"; then
+        local validation="PASSED"
+    fi
 
-    # Get all system info up front
-    local system_arch=$(uname -m)
-    local os_type=$(uname -s)
-    local libc_type="unknown"      
-    local bit_arch=$(getconf LONG_BIT)
-    local distro=$(grep '^ID=' /etc/os-release | cut -d'=' -f2 | tr -d '"')
 
-    # Single jq pass - store root object first
-    eval "$(echo "$api_response" | jq -r --arg arch "$system_arch" \
-                                      --arg libc "$libc_type" \
-                                      --arg bits "$bit_arch" \
-                                      --arg distro "$distro" '
-        # Store root context
-        . as $root |
-        
-        # Scoring function
-        def score_asset($name):
-          0 +
-          (if $name | test("\\.tar\\.gz$") then 15 else 0 end) +
-          (if $name | test("[Ll]inux") then 10 else 0 end) +
-          (if $arch == "x86_64" and $name | test("x86[-_.]64|amd64") then 30 else 0 end);
 
-        # Process everything and output shell assignments
-        .assets
-        | map(. + {score: score_asset(.name)})
-        | sort_by(-.score)
-        | "version=\"\($root.tag_name | sub("^v"; ""))\"
-           best_asset=\"\(.[0].name)\"
-           best_url=\"\(.[0].browser_download_url)\"
-           completions=\"\(map(select(.name | startswith("completions"))) | if length > 0 then .[0].url else "not found" end)\"
-           source=\"\($root._source)\""
-    ')"
+    # Print summary
+    echo "Repo: $repo_name (Source: $response_source)"
+    echo "Latest version: $latest_version"
+    echo "Best asset: $best_asset"
+    echo "Best asset is at: $best_asset_url"
+    echo "Completions URL: $completions"
+    echo "Name: $asset_list"
+    #echo "$asset_data" | jq .
+    #echo "$api_response" | jq .
+    #echo "Testing version: $version"
+    echo "Validation: $validation"
 
-    printf "Repo: %s (Source: %s)\nLatest version: %s\nBest asset: %s\nBest asset URL: %s\nCompletions: %s\n" \
-        "$repo_name" "$source" "$version" "$best_asset" "$best_url" "$completions"
+    
 
 }
 

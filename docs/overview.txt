@@ -60,7 +60,7 @@ Processed_assets_json will have format:
                 "bits": "64",
                 "distro": "ubuntu"
         },
-        "version_info": {
+        "version_info": {                          # this is written by the version_comparison function, during batch processing.  
                 "github": "1.2.3",
                 "apt": "1.0.0",
                 "comparison": "github_newer"
@@ -68,14 +68,14 @@ Processed_assets_json will have format:
         "has_manfiles": false,
         "has_completions": false,
         "has_source": false,
-        "chosen": {
+        "chosen_asset": {
                 "name": "asset.tar.gz",
                 "score": 85,
                 "reason": "scoring reasons...",
                 "url": "https://..."
         },
-        "viable": [...],
-        "excluded": [...],
+        "viable_assets": [...],
+        "excluded_assets": [...],
         "man": [...],
         "completions": [...],
         "source": [...]
