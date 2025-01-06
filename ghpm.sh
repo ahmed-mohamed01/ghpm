@@ -508,15 +508,15 @@ validate_binary() {
     fi
 
     declare -A FILE_PATTERNS=(
-        [x86_64]="ELF.*x86[-_ ]64.*LSB.*" 
-        [aarch64]="ELF.*aarch64.*LSB.*"
+        [x86_64]="ELF|x86[-_ ]64|LSB" 
+        [aarch64]="ELF|*aarch64.*LSB.*"
     )
 
     # Verify executable is actually a binary
     local file_info
     file_info=$(file -b "$binary_path")
-    if [[ ! "$file_info" =~ ${FILE_PATTERNS[$SYSTEM_ARCH]} ]]; then
-        log "ERROR" "Incompatible binary. Expected pattern: ${FILE_PATTERNS[$SYSTEM_ARCH]} but got: $file_info"
+    if [[ ! "$file_info" =~ ${FILE_PATTERNS[$system_arch]} ]]; then
+        log "ERROR" "Incompatible binary. Expected pattern: ${FILE_PATTERNS[$system_arch]} but got: $file_info"
         return 1
     fi
     # Check dependencies if dynamically linked
@@ -559,6 +559,7 @@ install_man_pages_completions() {
     # Create completion directories if they don't exist
     local bash_comp_dir="$HOME/.local/share/bash-completion/completions"
     local zsh_comp_dir="$HOME/.local/share/zsh/site-functions"
+    local fish_completions_dir="$HOME/.config/fish/completions"
     local man_dir="$HOME/.local/share/man"
     
     mkdir -p "$bash_comp_dir" "$zsh_comp_dir" "$man_dir"
