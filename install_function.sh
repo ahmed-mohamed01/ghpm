@@ -59,7 +59,8 @@ install_package() {
     echo "    $binary_name  --> $install_dir/$binary_name"
 
     # Check for man pages and completions
-    local man_files completions_files
+    local man_files_url completions_files_url
+    
     local man_files=$(echo "$asset_data" | jq -r '.man_files | join("\n")')
     local completion_files=$(echo "$asset_data" | jq -r '.completions_files | join("\n")')
     local installed_files=()
