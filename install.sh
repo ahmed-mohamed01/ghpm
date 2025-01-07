@@ -24,8 +24,6 @@ install_package() {
     completions_url=($(echo "$processed_data" | jq -r '.completions_files[].url // empty'))
     version=($(echo "$processed_data" | jq -r '.version' ))
     asset_name=$(echo "$processed_data" | jq -r '.chosen_asset.name')
-    echo "Man1 url: $man1_url"
-    echo "Completions url: $completions_url"
 
     if [[ -z "$asset_url" ]]; then
         log "ERROR" "No suitable asset found for $repo_name"
@@ -126,6 +124,8 @@ install_package() {
             installed_files+=("$completion_dest")
         fi
     done
+
+    setup_paths
 }
 
 main() {

@@ -1,7 +1,7 @@
 #! /usr/bin/env bash
 
 #set -euo pipefail      # set -e error handling, -u undefined variable protection -o pipefail piepline faulure catching. 
-DISPLAY_ISSUES=true    # make log output visible. 
+DISPLAY_ISSUES=false   # make log output visible. 
 
 # Configure folders
 DATA_DIR="${PWD}/.local/share/ghpm"
@@ -690,6 +690,52 @@ compare_versions() {
        }' "$processed_cache" > "${processed_cache}.tmp" && \
     mv "${processed_cache}.tmp" "$processed_cache"
     echo "$comparison"
+    return 0
+}
+
+setup_paths() {
+    # Check for traditional shells
+    local shell_files=()
+    [[ -f "$HOME/.bashrc" ]] && shell_files+=("$HOME/.bashrc")
+    [[ -f "$HOME/.zshrc" ]] && shell_files+=("$HOME/.zshrc")
+    
+    # Setup for bash/zsh
+    for rc_file in "${shell_files[@]}"; do
+        # Check and add newline first if needed
+        if [[ -f "$rc_file" ]]; then
+            [[ "$(tail -c1 "$rc_file" | wc -l)" -eq 0 ]] || echo "" >> "$rc_file"
+        fi
+
+        if ! grep -q "export PATH=.*$INSTALL_DIR" "$rc_file"; then
+            echo "export PATH=\"\$PATH:$INSTALL_DIR\"" >> "$rc_file"
+            log "INFO" "Added $INSTALL_DIR to PATH in $rc_file"
+            echo "$INSTALL_DIR added to PATH. Please run: source ~$(basename "$rc_file")"
+        fi
+        if ! grep -q "export MANPATH=.*$MAN_DIR" "$rc_file"; then
+            echo "export MANPATH=\"\$MANPATH:$MAN_DIR\"" >> "$rc_file"
+            log "INFO" "Added $MAN_DIR to MANPATH in $rc_file"
+            echo "$MAN_DIR added to MANPATH. Please run: source ~$(basename "$rc_file")"
+        fi
+    done
+
+    # Setup for fish
+    local fish_config="$HOME/.config/fish/config.fish"
+    if [[ -f "$fish_config" ]]; then
+        # Check and add newline first if needed
+        [[ "$(tail -c1 "$fish_config" | wc -l)" -eq 0 ]] || echo "" >> "$fish_config"
+        
+        if ! grep -q "fish_add_path.*$INSTALL_DIR" "$fish_config"; then
+            echo "fish_add_path $INSTALL_DIR" >> "$fish_config"
+            log "INFO" "Added $INSTALL_DIR to PATH in config.fish"
+            echo "$INSTALL_DIR added to PATH. Please run: source ~/.config/fish/config.fish"
+        fi
+        if ! grep -q "set -x MANPATH.*$MAN_DIR" "$fish_config"; then
+            echo "set -x MANPATH \$MANPATH $MAN_DIR" >> "$fish_config"
+            log "INFO" "Added $MAN_DIR to MANPATH in config.fish"
+            echo "$MAN_DIR added to MANPATH. Please run: source ~/.config/fish/config.fish"
+        fi
+    fi
+
     return 0
 }
 
