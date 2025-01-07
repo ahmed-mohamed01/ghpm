@@ -124,6 +124,10 @@ install_package() {
             installed_files+=("$completion_dest")
         fi
     done
+    # In install_package() function, after files are installed:
+    if [[ ${#installed_files[@]} -gt 0 ]]; then
+        db_ops add "$binary_name" "$repo_name" "$version" install_files
+    fi
 
     setup_paths
 }
@@ -144,6 +148,10 @@ main() {
         
         "--clear-cache")
             rm -rf $CACHE_DIR ;;
+        
+        "--version")
+            echo "0.2.1" ;;
+
         *)
             echo "Usage: $0 install owner/repo"
             return 1

@@ -693,6 +693,76 @@ compare_versions() {
     return 0
 }
 
+db_ops() {
+    local operation="$1"
+    local binary_name="$2"
+    shift 2
+
+    # Ensure DB exists
+    mkdir -p "$DB_DIR"
+    [[ ! -f "$DB_FILE" ]] && echo '{}' > "$DB_FILE"
+
+    case "$operation" in
+        "add")
+            local repo_name="$1"
+            local version="$2"
+            local -n files_ref="$3"
+            
+            local ghpm_id=$(uuidgen || date +%s%N)
+            local current_time=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+            # Convert install_files associative array to JSON
+            local files_json="["
+            local first=true
+            for key in "${!files_ref[@]}"; do
+                [[ "$first" = true ]] || files_json+=","
+                first=false
+                files_json+=$(jq -n \
+                    --arg name "$(basename "${files_ref[$key]}")" \
+                    --arg path "${files_ref[$key]}" \
+                    --arg type "$key" \
+                    '{name: $name, location: $path, type: $type}')
+            done
+            files_json+="]"
+
+            # Create and add package entry
+            if ! jq --arg name "$binary_name" \
+                   --arg repo "$repo_name" \
+                   --arg id "$ghpm_id" \
+                   --arg ver "$version" \
+                   --arg time "$current_time" \
+                   --argjson files "$files_json" \
+                   '.[$name] = {
+                       repo: $repo,
+                       ghpm_id: $id,
+                       version: $ver,
+                       installed_date: $time,
+                       last_updated: $time,
+                       installed_files: $files
+                   }' "$DB_FILE" > "${DB_FILE}.tmp"; then
+                return 1
+            fi
+            mv "${DB_FILE}.tmp" "$DB_FILE"
+            ;;
+            
+        "remove")
+            # Get and remove files, then remove DB entry
+            jq -r --arg name "$binary_name" '.[$name].installed_files[].location' "$DB_FILE" | 
+                while read -r file; do [[ -f "$file" ]] && rm -f "$file"; done
+            jq --arg name "$binary_name" 'del(.[$name])' "$DB_FILE" > "${DB_FILE}.tmp" && 
+                mv "${DB_FILE}.tmp" "$DB_FILE"
+            ;;
+            
+        "list")
+            jq -r 'to_entries[] | "\(.key):\n  Repo: \(.value.repo)\n  Version: \(.value.version)\n"' "$DB_FILE"
+            ;;
+            
+        "get")
+            jq --arg name "$binary_name" '.[$name]' "$DB_FILE"
+            ;;
+    esac
+}
+
 setup_paths() {
     # Check for traditional shells
     local shell_files=()

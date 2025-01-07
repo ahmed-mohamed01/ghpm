@@ -214,3 +214,30 @@ has a --clear-cache that will clear the cache (removes the $CACHE_DIR/assets and
 
 ## TODO
 
+
+db schema WIP:
+
+{
+   "fzf" :  {
+      "repo": "owner/repo",
+      "ghpm_id": "234lkafsasdl",
+      "version": "1.2.3",
+      "installed_date": "2024-01-05T12:00:00Z",
+      "last_updated": "2024-01-05T12:00:00Z",
+      "installed_files": [
+        {
+        "name": "fzf",
+        "location": "install/dir/fzf",
+        "type": "binary",
+        }
+        {
+        "name": "fzf.bash",
+        "location": "bash/completions/dir/fzf.bash",
+        "type": "completions",
+        }
+      ]       
+        },
+   "zoxide" {
+        "repo": "ajeetdsouza/zoxide"
+        ....
+   }
