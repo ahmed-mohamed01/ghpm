@@ -1,3 +1,4 @@
 .local/
 .local/share/ghpm/cache/api-cache.json
 .local/share/ghpm/cache/api-cache.json
+.local
