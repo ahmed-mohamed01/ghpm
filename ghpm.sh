@@ -14,6 +14,11 @@ ASSET_CACHE_DIR="${CACHE_DIR}/repos"
 DB_DIR="${DATA_DIR}/db"
 DB_FILE="${DB_DIR}/installed.json"
 
+BASH_COMPLETION_DIR="${PWD}/.local/share/bash-completion/completions"
+ZSH_COMPLETION_DIR="${PWD}/.local/share/zsh/site-functions"
+FISH_COMPLETION_DIR="${PWD}/.config/fish/completions"
+MAN_DIR="${PWD}/.local/share/man"
+
 get_cache_paths() {
     local repo_name="$1"
     local repo_dir="$(echo "$repo_name" | sed 's|/|_|g')"
@@ -229,14 +234,14 @@ process_asset_data() {
         if [[ "$name" =~ ${EXCLUDED_PATTERNS[$system_arch]} ]]; then
             excluded_assets+=("{\"name\":\"$name\",\"reason\":\"excluded pattern\",\"url\":\"$url\"}")
             continue    
-        elif [[ "$name" =~ [sS]ource[._-?][Cc]ode ]]; then
+        elif [[ "$name" =~ [Ss]ource([._-]?)[Cc]ode|[Ss]ource([._-]?[Ff]iles?)?|[Ss]ource\.(tar\.gz|tgz|zip)$ ]]; then
             source_files+=("{\"name\":\"$name\",\"url\":\"$url\"}")
             excluded_assets+=("{\"name\":\"$name\",\"reason\":\"source code archive\",\"url\":\"$url\"}")
             continue
-        elif [[ "$name" =~ ^completions[^/]*\.(tar\.gz|tgz)$ ]]; then
+        elif [[ "$name" =~ ^(completions|auto[-_]complete)[^/]*\.(tar\.gz|tgz)$ ]]; then
             completions_files+=("{\"name\":\"$name\",\"url\":\"$url\"}")
             excluded_assets+=("{\"name\":\"$name\",\"reason\":\"completions files\",\"url\":\"$url\"}")
-        elif [[ "$name" =~ ^man[^/]*\.(tar\.gz|tgz)$ ]]; then
+        elif [[ "$name" =~ ^(man(page|-[0-9]+(\.[0-9]+)*)|[^/]+_man_page[^/]*)\.(tar\.gz|tgz)$  ]]; then
             man_files+=("{\"name\":\"$name\",\"url\":\"$url\"}")
             excluded_assets+=("{\"name\":\"$name\",\"reason\":\"man files\",\"url\":\"$url\"}")
         else
@@ -553,102 +558,79 @@ get_dependencies() {
 }
 
 prep_install_files() {
-    local processed_data="$1" asset_url="$2" install_files=()
-    declare -A seen_files=()
-    
-    # Process main asset
-    get_cache_paths "$repo"
-    local downloaded_asset extracted_dir="$REPO_EXTRACTED_DIR"
-    if ! downloaded_asset=$(download_asset "$repo" "$asset_url") || \
-       ! extract_package "$downloaded_asset" "$extracted_dir" || \
-       ! binary_path=$(validate_binary "$extracted_dir"); then
+    local processed_json="$1"
+    local main_url="$2"
+    local man_url="$3"      # Optional
+    local completions_url="$4"   # Optional
+    local -n return_files=$5  # nameref for returning the associative array
+
+    # Download and process main asset (required)
+    log "DEBUG" "Processing main asset: $main_url"
+    local downloaded_asset
+    if ! downloaded_asset=$(download_asset "$repo_name" "$main_url") || \
+       ! extract_package "$downloaded_asset" "$REPO_EXTRACTED_DIR" || \
+       ! local binary_path=$(validate_binary "$REPO_EXTRACTED_DIR"); then
+        log "ERROR" "Binary validation failed for $main_url"
         return 1
     fi
+    return_files[binary]="$binary_path"
 
-    # Setup install locations
-    local binary_name=$(basename "$binary_path")
-    local man_dir="$HOME/.local/share/man/man1"
-    declare -A comp_dirs=()
-    
-    # Shell detection
-    for shell in bash zsh fish; do
-        if command -v $shell >/dev/null; then
-            log "DEBUG" "Found $shell shell"
-            case $shell in
-                bash) comp_dirs[$shell]="$HOME/.local/share/bash-completion/completions" ;;
-                zsh)  comp_dirs[$shell]="$HOME/.local/share/zsh/site-functions" ;;
-                fish) comp_dirs[$shell]="$HOME/.config/fish/completions" ;;
-            esac
-            log "DEBUG" "Set $shell completion dir to ${comp_dirs[$shell]}"
+    # Download and process man file if URL provided
+    if [[ -n "$man_url" ]]; then
+        log "DEBUG" "Processing man file: $man_url"
+        local man_file
+        if man_file=$(download_asset "$repo_name" "$man_url"); then
+            extract_package "$man_file" "$REPO_EXTRACTED_DIR"
+            log "DEBUG" "Extracted man file to $REPO_EXTRACTED_DIR"
         else
-            log "DEBUG" "$shell not found"
+            log "WARNING" "Failed to download man file from $man_url"
         fi
-    done
+    fi
 
-    # Create directories
-    for dir in "$man_dir" "${comp_dirs[@]}"; do
-        mkdir -p "$dir"
-        log "DEBUG" "Created directory: $dir"
-    done
+    # Download and process completions if URL provided
+    if [[ -n "$completions_url" ]]; then
+        log "DEBUG" "Processing completions: $completions_url"
+        local completions_file
+        if completions_file=$(download_asset "$repo_name" "$completions_url"); then
+            extract_package "$completions_file" "$REPO_EXTRACTED_DIR"
+            log "DEBUG" "Extracted completions to $REPO_EXTRACTED_DIR"
+        else
+            log "WARNING" "Failed to download completions from $completions_url"
+        fi
+    fi
 
-    # Add binary first
-    install_files+=("$binary_path:$INSTALL_DIR/$binary_name:binary")
-
-    # Debug: List all files found
-    log "DEBUG" "Found files in $extracted_dir:"
-    find "$extracted_dir" -type f -exec ls -l {} \;
-
-    # Find all completion and man files in extracted directory
+    # Search extracted directory for installable files
+    # This happens regardless of whether auxiliary files were downloaded
+    # as they might be bundled with the main asset
+    local man_page_counter=0
+    log "DEBUG" "Searching $REPO_EXTRACTED_DIR for installable files"
     while IFS= read -r file; do
-        log "DEBUG" "Processing file: $file"
-        [[ "$file" == "$binary_path" ]] && continue
-
-        local file_entry=""
         case "$file" in
-            # Completions - match by name and path patterns
-            */bash-completion/*|*.bash|*${binary_name}.bash)
-                [[ -n "${comp_dirs[bash]}" ]] && {
-                    log "DEBUG" "Adding bash completion: $file"
-                    file_entry="$file:${comp_dirs[bash]}/$binary_name:bash"
-                } ;;
-            # Zsh completions - match both _name and in zsh directory
-            */_*|*/zsh-completion/*|*/_${binary_name})
-                [[ -n "${comp_dirs[zsh]}" ]] && {
-                    log "DEBUG" "Adding zsh completion: $file"
-                    file_entry="$file:${comp_dirs[zsh]}/_$binary_name:zsh"
-                } ;;
-            # Fish completions
-            *.fish|*/fish-completion/*)
-                [[ -n "${comp_dirs[fish]}" ]] && {
-                    log "DEBUG" "Adding fish completion: $file"
-                    file_entry="$file:${comp_dirs[fish]}/$(basename "$file"):fish"
-                } ;;
-            # Man pages - match any .1 through .9 and confirm proper format
             *.1|*.2|*.3|*.4|*.5|*.6|*.7|*.8|*.9)
-                if file "$file" | grep -q "troff or preprocessor input"; then
-                    log "DEBUG" "Found man page: $file"
-                    local section=${file##*.}
-                    file_entry="$file:$man_dir/$(basename "$file"):man$section"
-                    log "DEBUG" "Adding man file_entry: $file_entry"
-                fi ;;
+                local section=${file##*.}
+                return_files["man${section}_${man_page_counter}"]="$file"
+                ((man_page_counter++))
+                log "DEBUG" "Found man page (section $section): $file" ;;
+            */bash-completion/*|*.bash)
+                return_files[bash-completions]="$file"
+                log "DEBUG" "Found bash completion: $file" ;;
+            */zsh-completion/*|*/_*)
+                return_files[zsh-completions]="$file"
+                log "DEBUG" "Found zsh completion: $file" ;;
+            *.fish|*/fish-completion/*)
+                return_files[fish-completions]="$file"
+                log "DEBUG" "Found fish completion: $file" ;;
         esac
+    done < <(find "$REPO_EXTRACTED_DIR" -type f)
 
-        # Only add if we haven't seen this destination before
-        if [[ -n "$file_entry" ]]; then
-            local dest=$(echo "$file_entry" | cut -d: -f2)
-            if [[ -z "${seen_files[$dest]}" ]]; then
-                seen_files[$dest]=1
-                log "DEBUG" "Adding to install_files: $file_entry"
-                install_files+=("$file_entry")
-            else
-                log "DEBUG" "Skipping duplicate destination: $dest"
-            fi
-        fi
-    done < <(find "$extracted_dir" -type f)
-
-    # Output each file entry on its own line
-    printf '%s\n' "${install_files[@]}"
+    # Return success
     return 0
+    # Output is an associative array 
+    # # install_files=(
+    #     [binary]="path/to/extracted/eza"
+    #     [man1]="path/to/extracted/eza.1"
+    #     [bash-completions]="path/to/extracted/eza.bash"   )
+
 }
 
 ## ---- for use in --file mode ----- ##### 

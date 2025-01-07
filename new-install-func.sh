@@ -4,80 +4,74 @@
 source ./ghpm.sh
 
 install_package() {
-    local repo="$1"
+    local repo_name="$1"
     
     # Fetch and process asset data
     local api_response
-    if ! api_response=$(query_github_api "$repo"); then
-        log "ERROR" "Failed to get API response for $repo"
+    if ! api_response=$(query_github_api "$repo_name"); then
+        log "ERROR" "Failed to get API response for $repo_name"
         return 1
     fi
 
     local processed_data
     if ! processed_data=$(process_asset_data "$api_response"); then
-        log "ERROR" "Failed to process asset data for $repo"
+        log "ERROR" "Failed to process asset data for $repo_name"
         return 1
     fi
-    # Extract key information
-    local version=$(echo "$processed_data" | jq -r '.version | sub("^v"; "")')
-    local asset_name=$(echo "$processed_data" | jq -r '.chosen_asset.name')
-    local asset_url=$(echo "$processed_data" | jq -r '.chosen_asset.url')
+
+    asset_url=$(echo "$processed_data" | jq -r '.chosen_asset.url')
+    man1_url=($(echo "$processed_data" | jq -r '.man_files[].url // empty'))
+    completions_url=($(echo "$processed_data" | jq -r '.completions_files[].url // empty'))
+    version=($(echo "$processed_data" | jq -r '.version' ))
+    asset_name=$(echo "$processed_data" | jq -r '.chosen_asset.name')
+    echo "Man1 url: $man1_url"
+    echo "Completions url: $completions_url"
 
     if [[ -z "$asset_url" ]]; then
-        log "ERROR" "No suitable asset found for $repo"
+        log "ERROR" "No suitable asset found for $repo_name"
         return 1
     fi
 
     # Prepare files for installation
-    get_cache_paths "$repo"
-    readarray -t files_to_install < <(prep_install_files "$processed_data" "$asset_url")
-    
-    if [[ ${#files_to_install[@]} -eq 0 ]]; then
-        log "ERROR" "No files prepared for installation"
+    get_cache_paths "$repo_name"
+    declare -A install_files
+    if ! prep_install_files "$processed_data" "$asset_url" "$man1_url" "$completions_url" install_files; then
+        log "ERROR" "Failed to prepare installation files"
         return 1
     fi
 
     # Display installation details
-    echo -e "\nRepo: $repo"
+    echo -e "\nRepo: $repo_name"
     echo "Latest version: $version"
     echo "Release asset: $asset_name"
     echo "Files to install:"
-    
-    # Create associative array for file groups
-    declare -A file_groups
-    
-    # Process each file and group by type
-    for file in "${files_to_install[@]}"; do
-        if [[ -n "$file" ]]; then
-            IFS=: read -r source dest type <<< "$file"
-            if [[ -n "$type" ]]; then
-                file_groups["$type"]+="$dest"$'\n'
-            fi
-        fi
-    done
 
-    # Display binary first
-    if [[ -n "${file_groups[binary]:-}" ]]; then
-        while IFS= read -r dest; do
-            [[ -n "$dest" ]] && printf "    Binary --> %s\n" "$dest"
-        done <<< "${file_groups[binary]}"
+    if [[ -n "${install_files[binary]:-}" ]]; then
+        local binary_name=$(basename "${install_files[binary]}")
+        printf "    %-20s --> %s\n" "$binary_name" "$INSTALL_DIR/$binary_name"
     fi
 
-    # Display completions
-    for shell in fish zsh bash; do
-        if [[ -n "${file_groups[$shell]:-}" ]]; then
-            while IFS= read -r dest; do
-                [[ -n "$dest" ]] && printf "    %s completion --> %s\n" "$shell" "$dest"
-            done <<< "${file_groups[$shell]}"
+    # Display man pages (sorted by section)
+    for key in "${!install_files[@]}"; do
+        if [[ "$key" =~ ^man[1-9]_[0-9]+$ ]]; then
+            local section="${key%%_*}"  # Extract "man1" part
+            section="${section#man}"    # Extract just the number
+            local man_name=$(basename "${install_files[$key]}")
+            printf "    %-20s --> %s\n" "$man_name" "$MAN_DIR/man$section/$man_name"
         fi
     done
 
-    # Display man pages
-    for type in "${!file_groups[@]}"; do
-        if [[ "$type" =~ ^man[1-9]$ ]]; then
-            while IFS= read -r dest; do
-                [[ -n "$dest" ]] && printf "    %s page --> %s\n" "$type" "$dest"
-            done <<< "${file_groups[$type]}"
+    # Display shell completions
+    for shell in bash zsh fish; do
+        local completion_key="${shell}-completions"
+        if [[ -n "${install_files[$completion_key]:-}" ]]; then
+            local comp_name=$(basename "${install_files[$completion_key]}")
+            case "$shell" in
+                bash) target_dir="$BASH_COMPLETION_DIR" ;;
+                zsh)  target_dir="$ZSH_COMPLETION_DIR" ;;
+                fish) target_dir="$FISH_COMPLETION_DIR" ;;
+            esac
+            printf "    %-20s --> %s\n" "$comp_name" "$target_dir/$comp_name"
         fi
     done
     echo
@@ -91,62 +85,61 @@ install_package() {
     # Install files
     echo "Installing files..."
     local installed_files=()
-    for file in "${files_to_install[@]}"; do
-        if [[ -n "$file" ]]; then
-            IFS=: read -r source dest type <<< "$file"
-            if [[ -n "$dest" ]]; then
-                mkdir -p "$(dirname "$dest")"
-                if ! cp "$source" "$dest"; then
-                    log "ERROR" "Failed to install $type file to $dest"
-                    return 1
-                fi
-                [[ "$type" == "binary" ]] && chmod +x "$dest"
-                installed_files+=("$dest")
+
+    # Install binary
+    if [[ -n "${install_files[binary]}" ]]; then
+        local binary_dest="$INSTALL_DIR/$(basename "${install_files[binary]}")"
+        mkdir -p "$INSTALL_DIR"
+        if cp "${install_files[binary]}" "$binary_dest" && chmod +x "$binary_dest"; then
+            echo "Installed binary: $binary_dest"
+        fi
+    fi
+
+    # Install man pages (replaces old man page installation section)
+    for key in "${!install_files[@]}"; do
+        if [[ "$key" =~ ^man[1-9]_[0-9]+$ ]]; then
+            local section="${key%%_*}"
+            section="${section#man}"
+            local man_dest="$MAN_DIR/man$section/$(basename "${install_files[$key]}")"
+            mkdir -p "$MAN_DIR/man$section"
+            if cp "${install_files[$key]}" "$man_dest"; then
+                echo "Installed man page: $man_dest"
             fi
         fi
     done
 
-    # Update database
-    echo "Updating installation database..."
-    local db_entry
-    db_entry=$(jq -n \
-        --arg repo "$repo" \
-        --arg version "$version" \
-        --arg asset "$asset_name" \
-        --argjson files "$(printf '%s\n' "${installed_files[@]}" | jq -R . | jq -s .)" \
-        '{
-            repo: $repo,
-            version: $version,
-            asset: $asset,
-            install_files: $files,
-            install_date: now | strftime("%Y-%m-%d %H:%M:%S")
-        }')
-
-    mkdir -p "$(dirname "$DB_FILE")"
-    if [[ -f "$DB_FILE" ]]; then
-        jq --arg repo "$repo" --argjson entry "$db_entry" \
-            'del(.[$repo]) + {($repo): $entry}' "$DB_FILE" > "${DB_FILE}.tmp" && \
-        mv "${DB_FILE}.tmp" "$DB_FILE"
-    else
-        echo "{\"$repo\": $db_entry}" > "$DB_FILE"
-    fi
-
-    local binary_name=$(echo "${installed_files[0]}" | xargs basename)
-    echo "Installation complete: $binary_name installed to $INSTALL_DIR"
-    return 0
+    # Install completions
+    for shell in bash zsh fish; do
+        local completion_key="${shell}-completions"
+        if [[ -n "${install_files[$completion_key]:-}" ]]; then
+            case "$shell" in
+                bash) target_dir="$BASH_COMPLETION_DIR" ;;
+                zsh)  target_dir="$ZSH_COMPLETION_DIR" ;;
+                fish) target_dir="$FISH_COMPLETION_DIR" ;;
+            esac
+            local completion_dest="$target_dir/$(basename "${install_files[$completion_key]}")"
+            mkdir -p "$target_dir"
+            if ! cp "${install_files[$completion_key]}" "$completion_dest"; then
+                log "ERROR" "Failed to install $shell completion to $completion_dest"
+                return 1
+            fi
+            installed_files+=("$completion_dest")
+        fi
+    done
 }
+
 main() {
     local cmd="$1"
     shift
 
     case "$cmd" in
         "install")
-            local repo="$1"
-            if [[ -z "$repo" ]]; then
+            local repo_name="$1"
+            if [[ -z "$repo_name" ]]; then
                 echo "Usage: $0 install owner/repo"
                 return 1
             fi
-            install_package "$repo"
+            install_package "$repo_name"
             ;;
         
         "--clear-cache")
