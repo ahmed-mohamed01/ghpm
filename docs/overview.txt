@@ -91,6 +91,7 @@ Example output:
         Files to install:
             fzf  --> /home/ahmed/.local/bin/fzf
             man-1 --> /home/ahmed/.local/share/man/man1/fzf.1
+            bash.completions --> /home/ahmed/.local/share/bash/completions
 
         Proceed to install? [y/N]
 

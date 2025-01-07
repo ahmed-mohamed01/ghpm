@@ -1,6 +1,6 @@
 #! /usr/bin/env bash
 
-set -euo pipefail      # set -e error handling, -u undefined variable protection -o pipefail piepline faulure catching. 
+#set -euo pipefail      # set -e error handling, -u undefined variable protection -o pipefail piepline faulure catching. 
 DISPLAY_ISSUES=true    # make log output visible. 
 
 # Configure folders
@@ -552,55 +552,102 @@ get_dependencies() {
     return 1
 }
 
-install_man_pages_completions() {
-    local extract_dir="$1"
-    local package_name=$(basename "$extract_dir")
+prep_install_files() {
+    local processed_data="$1" asset_url="$2" install_files=()
+    declare -A seen_files=()
     
-    # Create completion directories if they don't exist
-    local bash_comp_dir="$HOME/.local/share/bash-completion/completions"
-    local zsh_comp_dir="$HOME/.local/share/zsh/site-functions"
-    local fish_completions_dir="$HOME/.config/fish/completions"
-    local man_dir="$HOME/.local/share/man"
-    
-    mkdir -p "$bash_comp_dir" "$zsh_comp_dir" "$man_dir"
-    
-    # Find all potential completions and man pages in the extracted directory
-    local found_files=$(find "$extract_dir" \( -name "*completion*" -o -name "*completions*" -o -name "*.1" -o -name "*.1.gz" \) -type f)
-    
-    if [ -z "$found_files" ]; then
-        echo "No completions or man pages found in extracted files" >&2
-        return 0
+    # Process main asset
+    get_cache_paths "$repo"
+    local downloaded_asset extracted_dir="$REPO_EXTRACTED_DIR"
+    if ! downloaded_asset=$(download_asset "$repo" "$asset_url") || \
+       ! extract_package "$downloaded_asset" "$extracted_dir" || \
+       ! binary_path=$(validate_binary "$extracted_dir"); then
+        return 1
     fi
+
+    # Setup install locations
+    local binary_name=$(basename "$binary_path")
+    local man_dir="$HOME/.local/share/man/man1"
+    declare -A comp_dirs=()
     
-    local installed_count=0
+    # Shell detection
+    for shell in bash zsh fish; do
+        if command -v $shell >/dev/null; then
+            log "DEBUG" "Found $shell shell"
+            case $shell in
+                bash) comp_dirs[$shell]="$HOME/.local/share/bash-completion/completions" ;;
+                zsh)  comp_dirs[$shell]="$HOME/.local/share/zsh/site-functions" ;;
+                fish) comp_dirs[$shell]="$HOME/.config/fish/completions" ;;
+            esac
+            log "DEBUG" "Set $shell completion dir to ${comp_dirs[$shell]}"
+        else
+            log "DEBUG" "$shell not found"
+        fi
+    done
+
+    # Create directories
+    for dir in "$man_dir" "${comp_dirs[@]}"; do
+        mkdir -p "$dir"
+        log "DEBUG" "Created directory: $dir"
+    done
+
+    # Add binary first
+    install_files+=("$binary_path:$INSTALL_DIR/$binary_name:binary")
+
+    # Debug: List all files found
+    log "DEBUG" "Found files in $extracted_dir:"
+    find "$extracted_dir" -type f -exec ls -l {} \;
+
+    # Find all completion and man files in extracted directory
     while IFS= read -r file; do
+        log "DEBUG" "Processing file: $file"
+        [[ "$file" == "$binary_path" ]] && continue
+
+        local file_entry=""
         case "$file" in
-            *bash-completion*|*bash_completion*|*completion.bash|*completions.bash)
-                echo "Installing bash completion: $file" >&2
-                cp "$file" "$bash_comp_dir/$package_name"
-                ((installed_count++))
-                ;;
-            *zsh-completion*|*zsh_completion*|*_*)
-                echo "Installing zsh completion: $file" >&2
-                cp "$file" "$zsh_comp_dir/_$package_name"
-                ((installed_count++))
-                ;;
-            *.1|*.1.gz)
-                local section_dir="$man_dir/man1"
-                echo "Installing man page: $file to $section_dir" >&2
-                mkdir -p "$section_dir"
-                cp "$file" "$section_dir/"
-                ((installed_count++))
-                ;;
+            # Completions - match by name and path patterns
+            */bash-completion/*|*.bash|*${binary_name}.bash)
+                [[ -n "${comp_dirs[bash]}" ]] && {
+                    log "DEBUG" "Adding bash completion: $file"
+                    file_entry="$file:${comp_dirs[bash]}/$binary_name:bash"
+                } ;;
+            # Zsh completions - match both _name and in zsh directory
+            */_*|*/zsh-completion/*|*/_${binary_name})
+                [[ -n "${comp_dirs[zsh]}" ]] && {
+                    log "DEBUG" "Adding zsh completion: $file"
+                    file_entry="$file:${comp_dirs[zsh]}/_$binary_name:zsh"
+                } ;;
+            # Fish completions
+            *.fish|*/fish-completion/*)
+                [[ -n "${comp_dirs[fish]}" ]] && {
+                    log "DEBUG" "Adding fish completion: $file"
+                    file_entry="$file:${comp_dirs[fish]}/$(basename "$file"):fish"
+                } ;;
+            # Man pages - match any .1 through .9 and confirm proper format
+            *.1|*.2|*.3|*.4|*.5|*.6|*.7|*.8|*.9)
+                if file "$file" | grep -q "troff or preprocessor input"; then
+                    log "DEBUG" "Found man page: $file"
+                    local section=${file##*.}
+                    file_entry="$file:$man_dir/$(basename "$file"):man$section"
+                    log "DEBUG" "Adding man file_entry: $file_entry"
+                fi ;;
         esac
-    done <<< "$found_files"
-    
-    if [ $installed_count -gt 0 ]; then
-        echo "Installed $installed_count completion/man files" >&2
-    else
-        echo "No completions or man pages found to install" >&2
-    fi
-    
+
+        # Only add if we haven't seen this destination before
+        if [[ -n "$file_entry" ]]; then
+            local dest=$(echo "$file_entry" | cut -d: -f2)
+            if [[ -z "${seen_files[$dest]}" ]]; then
+                seen_files[$dest]=1
+                log "DEBUG" "Adding to install_files: $file_entry"
+                install_files+=("$file_entry")
+            else
+                log "DEBUG" "Skipping duplicate destination: $dest"
+            fi
+        fi
+    done < <(find "$extracted_dir" -type f)
+
+    # Output each file entry on its own line
+    printf '%s\n' "${install_files[@]}"
     return 0
 }
 
