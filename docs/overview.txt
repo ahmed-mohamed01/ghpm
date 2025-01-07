@@ -82,7 +82,7 @@ Processed_assets_json will have format:
         }
 
  - if binary is suitable, it will display the following outout:
-Example output:
+Example output: ne
 
         Repo: junegunn/fzf
         Latest version: 0.57.0
