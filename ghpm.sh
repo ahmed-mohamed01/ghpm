@@ -754,7 +754,35 @@ db_ops() {
             ;;
             
         "list")
-            jq -r 'to_entries[] | "\(.key):\n  Repo: \(.value.repo)\n  Version: \(.value.version)\n"' "$DB_FILE"
+            # Check if DB exists and is not empty
+            if [[ ! -f "$DB_FILE" ]] || [[ "$(jq 'length' "$DB_FILE")" -eq 0 ]]; then
+                echo "No packages installed via GHPM."
+                return 0
+            fi
+
+            # Print header
+            echo
+            echo "Packages managed by GH Package installer:"
+            echo
+            printf "%-15s %-12s %-s\n" "Package" "Version" "Location"
+            printf "%s\n" "-------------------------------------------------------"
+
+            # Process and display the package information
+            jq -r '
+                to_entries[] |
+                select(.value.installed_files != null) |
+                . as $root |
+                .value.installed_files[] |
+                select(.type == "binary") |
+                [
+                    $root.key,                  # Package name
+                    $root.value.version,        # Version
+                    .location                   # Binary location
+                ] |
+                @tsv
+            ' "$DB_FILE" | while IFS=$'\t' read -r package version location; do
+                printf "%-15s %-12s %-s\n" "$package" "$version" "$location"
+            done
             ;;
             
         "get")

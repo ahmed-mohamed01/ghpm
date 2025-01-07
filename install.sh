@@ -143,19 +143,25 @@ main() {
                 echo "Usage: $0 install owner/repo"
                 return 1
             fi
-            install_package "$repo_name"
-            ;;
+            install_package "$repo_name" ;;
         
         "--clear-cache")
             rm -rf $CACHE_DIR ;;
+
+        "--list")
+            db_ops list ;;
         
         "--version")
-            echo "0.2.1" ;;
+            echo "0.2.5" ;;
 
         *)
-            echo "Usage: $0 install owner/repo"
-            return 1
-            ;;
+            echo "Usage: $0 <command> [options]"
+            echo "Commands:"
+            echo "  install <owner/repo>    Install a package from GitHub"
+            echo "  --list                  List installed packages"
+            echo "  --clear-cache           Clear the cache"
+            echo "  --version               Show version"
+            return 1 ;;
     esac
 }
 
