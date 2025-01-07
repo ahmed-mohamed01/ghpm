@@ -25,6 +25,24 @@ It maintains a database of files it has copied, these are removed when package i
 - update and remove functions.
 - validates binaries before they are installed
 
+```bash
+# Standalone install 
+$ ghpm install eza-community/eza
+
+Repo: zyedidia/micro
+Latest version: v2.0.14
+Release asset: micro-2.0.14-linux64-static.tar.gz
+Files to install:
+    micro                --> /home/ahmed/ghpm/.local/bin/micro
+    micro.1              --> /home/ahmed/ghpm/.local/share/man/man1/micro.1
+
+Proceed with installation? [y/N]: y
+Installing files...
+Installed binary: /home/ahmed/ghpm/.local/bin/micro
+Installed man page: /home/ahmed/ghpm/.local/share/man/man1/micro.1
+
+```
+
 ## Dependencies
 
 - `curl`: For making HTTP requests to GitHub API
