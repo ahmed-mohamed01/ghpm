@@ -558,83 +558,93 @@ get_dependencies() {
 }
 
 prep_install_files() {
-    local processed_json="$1"
-    local main_url="$2" 
-    local man_url="$3" completions_url="$4"   # Optional
-    local -n return_sorted_files=$5 return_install_map=$6       # Will hold target file locations
-    eval $(detect_installed_shells)
-    declare -A section_counters=()
+    local main_url="$1"
+    local man_url="$2" 
+    local completions_url="$3"
+    local -n return_sorted_files=$4
+    local -n return_install_map=$5
+    # Get shell status
+    eval $("detect_installed_shells")
 
-    # Download and process main asset (required)
-    log "DEBUG" "Processing main asset: $main_url"
-    local downloaded_asset
-    if ! downloaded_asset=$(download_asset "$repo_name" "$main_url") || \
-       ! extract_package "$downloaded_asset" "$REPO_EXTRACTED_DIR" || \
-       ! local binary_path=$(validate_binary "$REPO_EXTRACTED_DIR"); then
-        log "ERROR" "Binary validation failed for $main_url"
-        return 1
-    fi
-    return_sorted_files[binary]="$binary_path"
-    return_install_map[$(basename "$binary_path")]="$INSTALL_DIR/$(basename "$binary_path")"
+    # Type-specific counters to handle multiple files of same type
+    declare -A type_counters=()
 
-     # Download and process man file if URL provided
-
+    # Download and extract all provided URLs
     local urls=("$main_url" "$man_url" "$completions_url")
     for url in "${urls[@]}"; do
         [[ -z "$url" ]] && continue
-        local file_name=$(basename "$url")
-        log "DEBUG" "Processing: $file_name"
-        if local file=$(download_asset "$repo_name" "$url"); then
-            extract_package "$file" "$REPO_EXTRACTED_DIR"
-            log "DEBUG" "Extracted $file_name to $REPO_EXTRACTED_DIR"
-        else
-            log "WARNING" "Failed to download from $url"
-            [[ "$url" == "$main_url" ]] && return 1  # Fail if main binary download fails
+        
+        if ! local file=$(download_asset "$repo_name" "$url"); then
+            [[ "$url" == "$main_url" ]] && return 1
+            continue
+        fi
+        
+        if ! extract_package "$file" "$REPO_EXTRACTED_DIR"; then
+            [[ "$url" == "$main_url" ]] && return 1
+            continue
         fi
     done
 
-    declare -A shell_patterns=(
-        [bash]='*/bash-completion/*|*.bash'
-        [zsh]='*/zsh-completion/*|*/_*'
-        [fish]='*.fish|*/fish-completion/*'
-    )
+    # Define completion file patterns for each shell
+    local bash_pattern='*/bash-completion/*|*.bash'
+    local zsh_pattern='*/zsh-completion/*|*/_*'
+    local fish_pattern='*.fish|*/fish-completion/*'
 
-    # Search extracted directory for installable files
-    # This happens regardless of whether auxiliary files were downloaded
-    # as they might be bundled with the main asset
-    local man_page_counter=0
-    log "DEBUG" "Searching $REPO_EXTRACTED_DIR for installable files"
+    # Process all files in extracted directory
+    local found_binary=false
+    
     while IFS= read -r file; do
-        local basename_file=$(basename "$file")
-        case "$file" in
-            *.1|*.2|*.3|*.4|*.5|*.6|*.7|*.8|*.9)
-                local section=${file##*.} && : ${section_counters["man${section}"]:=0} && \
-                return_sorted_files["man${section}_${section_counters["man${section}"]}"]="$file" && \
-                return_install_map["$basename_file"]="$MAN_DIR/man${section}/$basename_file" && \
-                ((section_counters["man${section}"]++)) ;;
-                
-            *)
-                for shell in bash zsh fish; do
-                    [[ ${SHELL_STATUS[$shell]:-0} -eq 0 ]] && continue
-                    
-                    if [[ "$file" =~ ${shell_patterns[$shell]} ]]; then
-                        : ${section_counters[$shell]:=0} && \
-                        return_sorted_files["${shell}-completion_${section_counters[$shell]}"]="$file" && \
-                        return_install_map["$basename_file"]="${shell^^}_COMPLETION_DIR/$basename_file" && \
-                        ((section_counters[$shell]++)) && \
-                        break
-                    fi
-                done ;;
-        esac
+        local filename=$(basename "$file")
+        local file_type="" target_path=""
+        local valid_binary=false
+
+        # Check for binary first
+        if ! $found_binary; then
+            if validate_binary "$file"; then
+                file_type="binary"
+                target_path="$INSTALL_DIR/$filename"
+                found_binary=true
+            fi
+
+        # Check for man pages
+        elif [[ "$filename" =~ ^.*\.([1-9])$ ]]; then
+            local section=${BASH_REMATCH[1]}
+            file_type="man${section}"
+            target_path="$MAN_DIR/man${section}/$filename"
+
+        # Check for shell completions
+        elif [[ ${SHELL_STATUS[bash]} -eq 1 && "$file" =~ $bash_pattern ]]; then
+            file_type="bash_completion"
+            target_path="$BASH_COMPLETION_DIR/$filename"
+        elif [[ ${SHELL_STATUS[zsh]} -eq 1 && "$file" =~ $zsh_pattern ]]; then
+            file_type="zsh_completion"
+            target_path="$ZSH_COMPLETION_DIR/$filename"
+        elif [[ ${SHELL_STATUS[fish]} -eq 1 && "$file" =~ $fish_pattern ]]; then
+            file_type="fish_completion"
+            target_path="$FISH_COMPLETION_DIR/$filename"
+        fi
+
+        # Add file to arrays if type was identified
+        if [[ -n "$file_type" && -n "$target_path" ]]; then
+            : ${type_counters[$file_type]:=0}
+            return_sorted_files["${file_type}_${type_counters[$file_type]}"]="$file"
+            return_install_map["${file_type}_${type_counters[$file_type]}"]="$target_path"
+            ((type_counters[$file_type]++))
+        fi
     done < <(find "$REPO_EXTRACTED_DIR" -type f)
 
-    # Return success
+    # Must find a binary to succeed
+    [[ "$found_binary" == false ]] && return 1
     return 0
-    # Output is an associative array 
-    # # install_files=(
+    # Output are two associative arrays
+    # # source_dir=(
     #     [binary]="path/to/extracted/eza"
     #     [man1]="path/to/extracted/eza.1"
     #     [bash-completions]="path/to/extracted/eza.bash"   )
+    #destination_dir=(
+    #     [binary]="${install_dir}/eza"
+    #     [man1]="${MAN_PATH}/eza.1"
+    #)
 
 }
 
@@ -737,33 +747,30 @@ db_ops() {
         "add")
             local repo_name="$1"
             local version="$2"
-            local -n files_ref="$3"      # Reference to sorted_install_map
-            local -n types_ref="$4"      # Reference to sorted_files
+            local -n files_ref="$3"
+            local -n types_ref="$4"
             
             local ghpm_id=$(uuidgen 2>/dev/null || date +%s%N)
             local current_time=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
-            # Convert install_files associative array to JSON
+            # Convert install_files to JSON
             local files_json="["
             local first=true
             
-            # Iterate through sorted_files to get proper type categorization
-            for type in "${!types_ref[@]}"; do
-                local source_file="${types_ref[$type]}"
-                local basename_file=$(basename "$source_file")
-                local install_path="${files_ref[$basename_file]}"
-                
+            # Use the type-based keys to keep everything in sync
+            for key in "${!types_ref[@]}"; do
                 [[ "$first" = true ]] || files_json+=","
                 first=false
+                # Extract base type by removing the counter suffix
+                local base_type=$(echo "$key" | sed 's/_[0-9]\+$//')
                 
-                files_json+=$(jq -n \
-                    --arg name "$basename_file" \
-                    --arg path "$install_path" \
-                    --arg type "$type" \
+                 files_json+=$(jq -n \
+                    --arg name "$(basename "${types_ref[$key]}")" \
+                    --arg path "${files_ref[$key]}" \
+                    --arg type "$base_type" \
                     '{name: $name, location: $path, type: $type}')
             done
             files_json+="]"
-
             # Create and add package entry
             if ! jq --arg name "$binary_name" \
                    --arg repo "$repo_name" \
@@ -895,9 +902,10 @@ setup_paths() {
 }
 
 install_package() {
-    local -n source_files=$1      # Reference to sorted_files array
-    local -n install_locations=$2  # Reference to sorted_install_map array
-    local binary_name="$3"        # Name of the binary for db operations
+    local mode="$1"
+    local -n source_files=$2     # Reference to sorted_files array
+    local -n install_locations=$3 # Reference to sorted_install_map array
+    
     
     # Create necessary directories
     for target in "${install_locations[@]}"; do
@@ -909,13 +917,8 @@ install_package() {
     for key in "${!source_files[@]}"; do
         local source="${source_files[$key]}"
         local basename_source=$(basename "$source")
-        local target="${install_locations[$basename_source]}"
-        
-        if [[ -z "$target" ]]; then
-            log "ERROR" "No target location found for $basename_source"
-            success=false
-            continue
-        fi
+        local target="${install_locations[$key]}"
+        [[ "$mode" == "standalone" ]] && echo "Installed $basename_source: $target"
         
         if ! mv "$source" "$target"; then
             log "ERROR" "Failed to move $source to $target"
@@ -923,12 +926,6 @@ install_package() {
             continue
         fi
         
-        # Set executable bit for binary
-        if [[ "$key" == "binary" ]]; then
-            chmod +x "$target"
-        fi
-        
-        echo "Installed $key: $target"
     done
 
     if ! $success; then
@@ -973,36 +970,22 @@ standalone_install() {
     declare -A sorted_files
     declare -A sorted_install_map
     
-    if ! prep_install_files "$processed_data" "$asset_url" "$man1_url" "$completions_url" sorted_files sorted_install_map; then
+    if ! prep_install_files "$asset_url" "$man1_url" "$completions_url" sorted_files sorted_install_map; then
         log "ERROR" "Failed to prepare installation files"
         return 1
     fi
 
-    # Display installation details
+    # Display installation details    
     echo -e "\nRepo: $repo_name"
     echo "Latest version: $version"
     echo "Release asset: $asset_name"
     echo "Files to install:"
-    
-    # First display binary
+
+    # Display all files, getting basename just for display
     for key in "${!sorted_files[@]}"; do
-        if [[ "$key" == "binary" ]]; then
-            local source="${sorted_files[$key]}"
-            local basename_source=$(basename "$source")
-            local target="${sorted_install_map[$basename_source]}"
-            printf "    %-20s --> %s\n" "$basename_source" "$target"
-            break
-        fi
-    done
-    
-    # Then display other files
-    for key in "${!sorted_files[@]}"; do
-        if [[ "$key" != "binary" ]]; then
-            local source="${sorted_files[$key]}"
-            local basename_source=$(basename "$source")
-            local target="${sorted_install_map[$basename_source]}"
-            printf "    %-20s --> %s\n" "$basename_source" "$target"
-        fi
+        local source="${sorted_files[$key]}"
+        local target="${sorted_install_map[$key]}"
+        printf "    %-20s --> %s\n" "$(basename "$source")" "$target"
     done
     echo
 
@@ -1014,18 +997,12 @@ standalone_install() {
     fi
 
     echo "Installing files..."
-    
+    echo
     # Get binary name for database operations
-    local binary_name
-    for key in "${!sorted_files[@]}"; do
-        if [[ "$key" == "binary" ]]; then
-            binary_name=$(basename "${sorted_files[$key]}")
-            break
-        fi
-    done
+    local binary_name=$(basename "${sorted_files[binary_0]}")
 
     # Perform installation
-    if ! install_package sorted_files sorted_install_map "$binary_name"; then
+    if ! install_package "standalone" sorted_files sorted_install_map ; then
         log "ERROR" "Installation failed"
         return 1
     fi
@@ -1036,6 +1013,11 @@ standalone_install() {
     fi
 
     setup_paths
+    echo 
+    echo "Installed $binary_name to $INSTALL_DIR"
+    echo
+
+
     return 0
 }
 
