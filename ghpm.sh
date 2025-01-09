@@ -708,7 +708,7 @@ db_ops() {
             local version="$2"
             local -n files_ref="$3"
             
-            local ghpm_id=$(uuidgen || date +%s%N)
+            local ghpm_id=$(uuidgen 2>/dev/null || date +%s%N)
             local current_time=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
             # Convert install_files associative array to JSON
@@ -740,6 +740,8 @@ db_ops() {
                        last_updated: $time,
                        installed_files: $files
                    }' "$DB_FILE" > "${DB_FILE}.tmp"; then
+                log "ERROR" "Failed to update database file"
+                rm -f "${DB_FILE}.tmp"
                 return 1
             fi
             mv "${DB_FILE}.tmp" "$DB_FILE"
@@ -747,10 +749,21 @@ db_ops() {
             
         "remove")
             # Get and remove files, then remove DB entry
-            jq -r --arg name "$binary_name" '.[$name].installed_files[].location' "$DB_FILE" | 
-                while read -r file; do [[ -f "$file" ]] && rm -f "$file"; done
-            jq --arg name "$binary_name" 'del(.[$name])' "$DB_FILE" > "${DB_FILE}.tmp" && 
-                mv "${DB_FILE}.tmp" "$DB_FILE"
+            local files_to_remove=$(jq -r --arg name "$binary_name" \
+                '.[$name].installed_files[].location // empty' "$DB_FILE")
+            
+            if [[ -n "$files_to_remove" ]]; then
+                echo "$files_to_remove" | while read -r file; do
+                    [[ -f "$file" ]] && rm -f "$file"
+                done
+            fi
+            
+            if ! jq --arg name "$binary_name" 'del(.[$name])' "$DB_FILE" > "${DB_FILE}.tmp"; then
+                log "ERROR" "Failed to update database file"
+                rm -f "${DB_FILE}.tmp"
+                return 1
+            fi
+            mv "${DB_FILE}.tmp" "$DB_FILE"
             ;;
             
         "list")
@@ -786,7 +799,7 @@ db_ops() {
             ;;
             
         "get")
-            jq --arg name "$binary_name" '.[$name]' "$DB_FILE"
+            jq --arg name "$binary_name" '.[$name] // empty' "$DB_FILE"
             ;;
     esac
 }
@@ -856,7 +869,7 @@ install_package() {
     asset_url=$(echo "$processed_data" | jq -r '.chosen_asset.url')
     man1_url=($(echo "$processed_data" | jq -r '.man_files[].url // empty'))
     completions_url=($(echo "$processed_data" | jq -r '.completions_files[].url // empty'))
-    version=($(echo "$processed_data" | jq -r '.version' ))
+    version=$(echo "$processed_data" | jq -r '.version')
     asset_name=$(echo "$processed_data" | jq -r '.chosen_asset.name')
 
     if [[ -z "$asset_url" ]]; then
@@ -878,16 +891,19 @@ install_package() {
     echo "Release asset: $asset_name"
     echo "Files to install:"
 
+    declare -a installed_files=()  # Initialize array to track all installed files
+    local binary_name
+
     if [[ -n "${install_files[binary]:-}" ]]; then
-        local binary_name=$(basename "${install_files[binary]}")
+        binary_name=$(basename "${install_files[binary]}")
         printf "    %-20s --> %s\n" "$binary_name" "$INSTALL_DIR/$binary_name"
     fi
 
-    # Display man pages (sorted by section)
+    # Display man pages
     for key in "${!install_files[@]}"; do
         if [[ "$key" =~ ^man[1-9]_[0-9]+$ ]]; then
-            local section="${key%%_*}"  # Extract "man1" part
-            section="${section#man}"    # Extract just the number
+            local section="${key%%_*}"
+            section="${section#man}"
             local man_name=$(basename "${install_files[$key]}")
             printf "    %-20s --> %s\n" "$man_name" "$MAN_DIR/man$section/$man_name"
         fi
@@ -914,20 +930,20 @@ install_package() {
         return 1
     fi
 
-    # Install files
     echo "Installing files..."
-    local installed_files=()
+    declare -A final_install_files
 
-    # Install binary
+     # Install binary
     if [[ -n "${install_files[binary]}" ]]; then
         local binary_dest="$INSTALL_DIR/$(basename "${install_files[binary]}")"
         mkdir -p "$INSTALL_DIR"
         if cp "${install_files[binary]}" "$binary_dest" && chmod +x "$binary_dest"; then
             echo "Installed binary: $binary_dest"
+            final_install_files[binary]="$binary_dest"  # Track in associative array
         fi
     fi
 
-    # Install man pages (replaces old man page installation section)
+     # Install man pages
     for key in "${!install_files[@]}"; do
         if [[ "$key" =~ ^man[1-9]_[0-9]+$ ]]; then
             local section="${key%%_*}"
@@ -936,10 +952,10 @@ install_package() {
             mkdir -p "$MAN_DIR/man$section"
             if cp "${install_files[$key]}" "$man_dest"; then
                 echo "Installed man page: $man_dest"
+                final_install_files[$key]="$man_dest"  # Track in associative array
             fi
         fi
     done
-
     # Install completions
     for shell in bash zsh fish; do
         local completion_key="${shell}-completions"
@@ -951,19 +967,21 @@ install_package() {
             esac
             local completion_dest="$target_dir/$(basename "${install_files[$completion_key]}")"
             mkdir -p "$target_dir"
-            if ! cp "${install_files[$completion_key]}" "$completion_dest"; then
-                log "ERROR" "Failed to install $shell completion to $completion_dest"
-                return 1
+            if cp "${install_files[$completion_key]}" "$completion_dest"; then
+                echo "Installed $shell completion: $completion_dest"
+                final_install_files[$completion_key]="$completion_dest"  # Track in associative array
             fi
-            installed_files+=("$completion_dest")
         fi
     done
-    # In install_package() function, after files are installed:
-    if [[ ${#installed_files[@]} -gt 0 ]]; then
-        db_ops add "$binary_name" "$repo_name" "$version" install_files
+    # Update the database if files were installed
+    if [[ ${#final_install_files[@]} -gt 0 && -n "$binary_name" ]]; then
+        if ! db_ops add "$binary_name" "$repo_name" "$version" "final_install_files"; then
+            log "ERROR" "Failed to update package database"
+            return 1
+        fi
     fi
-
     setup_paths
+    return 0
 }
 
 main() {
