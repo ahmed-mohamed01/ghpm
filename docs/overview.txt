@@ -82,7 +82,7 @@ Processed_assets_json will have format:
         }
 
  - if binary is suitable, it will display the following outout:
-Example output: ne
+Example output:
 
         Repo: junegunn/fzf
         Latest version: 0.57.0
@@ -172,7 +172,7 @@ has a --list option, which will check database to see if this is something manag
         fzf             0.57.0       /home/ahmed/.local/bin/fzf
 
 has a --update option which will one option, a package name
-check db to see if its is managed by gpi. if managed by gpi, it will check current installed version (from db) and call the github releases function to fetch proper release for this. It will call the same functions that checks binaries and ensure same procedure is followed (ensure correct architecture, install man pages, install shell-completions, check dependencies). Then it will display:
+ - check db to see if its is managed by gpi. if managed by gpi, it will check current installed version (from db) and call the github releases function to fetch proper release for this. It will call the same functions that checks binaries and ensure same procedure is followed (ensure correct architecture, install man pages, install shell-completions, check dependencies). Then it will display:
 
         Checking for update ...
                         
@@ -184,10 +184,13 @@ check db to see if its is managed by gpi. if managed by gpi, it will check curre
 
         Update found! 0.9.6 --> 0.9.7  Proceed? [y/N]
 
-        If proceed, it will overwrite the installed versoin with current verison, ensureing the db is updated. 
+ If proceed, it will overwrite the installed versoin with current verison, ensureing the db is updated. 
 
-        Has a --remove [package] option, which will check if managed by gpi, check db to see which files need to be removed, and inform user.
-
+Has a --remove [package] option
+  - check if package is in db  
+  - if in db, check files to be removed in package.files section
+  - removes the files and update the db to remove the empty
+ 
         Remove zoxide v0.9.6?
 
         This will remove the following files:
@@ -198,13 +201,23 @@ check db to see if its is managed by gpi. if managed by gpi, it will check curre
 
         Proceed? [y/N]
 
-Once confirmed, it will make the changes and update db.
+  Once confirmed, it will make the changes and update db.
 
 Has a --version flag that displays current version. 
 
         v0.02.1
 
 Has a --help that displays help message with usage.
+        Usage: ghpm <command> [options]
+        Commands:
+                install <owner/repo>    Install a package from GitHub
+                remove <package>        Remove an installed package
+                update <package>        Check for updates for the <package>
+                update--all             Check for updates for all installed packages
+                --file <file.txt>       Batch processed repositories provided in owner/repo format in a txt file. 
+                --list                  List installed packages
+                --clear-cache           Clear the cache
+                --version               Show version
 
 has a --clear-cache that will clear the cache (removes the $CACHE_DIR/assets and clears $CACHE_DIR/api-cache.json)
 
@@ -217,7 +230,8 @@ has a --clear-cache that will clear the cache (removes the $CACHE_DIR/assets and
 
 db schema WIP:
 
-{
+
+ {
    "fzf" :  {
       "repo": "owner/repo",
       "ghpm_id": "234lkafsasdl",
@@ -241,3 +255,23 @@ db schema WIP:
         "repo": "ajeetdsouza/zoxide"
         ....
    }
+
+prep_install_files()
+        - downloads and extracts needed files (main asset, and any completions or manfiles if these are separate)
+        - extracts files to the same $extract_dir
+        - loops through and searchs the $extract_dir for files and populates 2 arrays
+                found_files=(
+                        [binary]="{$extract_dir}/eza"
+                        [zsh-completion]="{$extract_dir}/_eza"
+                        [man1]="{$extract_dir}/eza.1"
+                )
+                install_map=(
+                        [eza]="$INSTALL_DIR/eza"
+                        [eza.1]="$MAN_PATH/man1/eza.1"
+                        [_eza]="ZSH-COMPLETIONS-DIR/_eza"
+                )
+
+process_installation()
+        - copies files to needed locations. 
+        - should be able to mv ${found_files[binary]} ${install_map[binary]} to copy files. 
+        - after installation, it will populate the db with the files installed = install_map[@]    # needs the final location of installed files so it can be removed later
