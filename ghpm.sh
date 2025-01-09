@@ -559,10 +559,11 @@ get_dependencies() {
 
 prep_install_files() {
     local processed_json="$1"
-    local main_url="$2"
-    local man_url="$3"      # Optional
-    local completions_url="$4"   # Optional
-    local -n return_files=$5  # nameref for returning the associative array
+    local main_url="$2" 
+    local man_url="$3" completions_url="$4"   # Optional
+    local -n return_sorted_files=$5 return_install_map=$6       # Will hold target file locations
+    eval $(detect_installed_shells)
+    declare -A section_counters=()
 
     # Download and process main asset (required)
     log "DEBUG" "Processing main asset: $main_url"
@@ -573,31 +574,30 @@ prep_install_files() {
         log "ERROR" "Binary validation failed for $main_url"
         return 1
     fi
-    return_files[binary]="$binary_path"
+    return_sorted_files[binary]="$binary_path"
+    return_install_map[$(basename "$binary_path")]="$INSTALL_DIR/$(basename "$binary_path")"
 
-    # Download and process man file if URL provided
-    if [[ -n "$man_url" ]]; then
-        log "DEBUG" "Processing man file: $man_url"
-        local man_file
-        if man_file=$(download_asset "$repo_name" "$man_url"); then
-            extract_package "$man_file" "$REPO_EXTRACTED_DIR"
-            log "DEBUG" "Extracted man file to $REPO_EXTRACTED_DIR"
-        else
-            log "WARNING" "Failed to download man file from $man_url"
-        fi
-    fi
+     # Download and process man file if URL provided
 
-    # Download and process completions if URL provided
-    if [[ -n "$completions_url" ]]; then
-        log "DEBUG" "Processing completions: $completions_url"
-        local completions_file
-        if completions_file=$(download_asset "$repo_name" "$completions_url"); then
-            extract_package "$completions_file" "$REPO_EXTRACTED_DIR"
-            log "DEBUG" "Extracted completions to $REPO_EXTRACTED_DIR"
+    local urls=("$main_url" "$man_url" "$completions_url")
+    for url in "${urls[@]}"; do
+        [[ -z "$url" ]] && continue
+        local file_name=$(basename "$url")
+        log "DEBUG" "Processing: $file_name"
+        if local file=$(download_asset "$repo_name" "$url"); then
+            extract_package "$file" "$REPO_EXTRACTED_DIR"
+            log "DEBUG" "Extracted $file_name to $REPO_EXTRACTED_DIR"
         else
-            log "WARNING" "Failed to download completions from $completions_url"
+            log "WARNING" "Failed to download from $url"
+            [[ "$url" == "$main_url" ]] && return 1  # Fail if main binary download fails
         fi
-    fi
+    done
+
+    declare -A shell_patterns=(
+        [bash]='*/bash-completion/*|*.bash'
+        [zsh]='*/zsh-completion/*|*/_*'
+        [fish]='*.fish|*/fish-completion/*'
+    )
 
     # Search extracted directory for installable files
     # This happens regardless of whether auxiliary files were downloaded
@@ -605,21 +605,26 @@ prep_install_files() {
     local man_page_counter=0
     log "DEBUG" "Searching $REPO_EXTRACTED_DIR for installable files"
     while IFS= read -r file; do
+        local basename_file=$(basename "$file")
         case "$file" in
             *.1|*.2|*.3|*.4|*.5|*.6|*.7|*.8|*.9)
-                local section=${file##*.}
-                return_files["man${section}_${man_page_counter}"]="$file"
-                ((man_page_counter++))
-                log "DEBUG" "Found man page (section $section): $file" ;;
-            */bash-completion/*|*.bash)
-                return_files[bash-completions]="$file"
-                log "DEBUG" "Found bash completion: $file" ;;
-            */zsh-completion/*|*/_*)
-                return_files[zsh-completions]="$file"
-                log "DEBUG" "Found zsh completion: $file" ;;
-            *.fish|*/fish-completion/*)
-                return_files[fish-completions]="$file"
-                log "DEBUG" "Found fish completion: $file" ;;
+                local section=${file##*.} && : ${section_counters["man${section}"]:=0} && \
+                return_sorted_files["man${section}_${section_counters["man${section}"]}"]="$file" && \
+                return_install_map["$basename_file"]="$MAN_DIR/man${section}/$basename_file" && \
+                ((section_counters["man${section}"]++)) ;;
+                
+            *)
+                for shell in bash zsh fish; do
+                    [[ ${SHELL_STATUS[$shell]:-0} -eq 0 ]] && continue
+                    
+                    if [[ "$file" =~ ${shell_patterns[$shell]} ]]; then
+                        : ${section_counters[$shell]:=0} && \
+                        return_sorted_files["${shell}-completion_${section_counters[$shell]}"]="$file" && \
+                        return_install_map["$basename_file"]="${shell^^}_COMPLETION_DIR/$basename_file" && \
+                        ((section_counters[$shell]++)) && \
+                        break
+                    fi
+                done ;;
         esac
     done < <(find "$REPO_EXTRACTED_DIR" -type f)
 
@@ -693,6 +698,32 @@ compare_versions() {
     return 0
 }
 
+detect_installed_shells() {
+    # Initialize array with shell status
+    declare -A SHELL_STATUS=(
+        [bash]=0
+        [zsh]=0
+        [fish]=0
+    )
+
+    # Check for shell executables and config files
+    if command -v bash >/dev/null 2>&1 && [[ -f "$HOME/.bashrc" ]]; then
+        SHELL_STATUS[bash]=1
+    fi
+    
+    if command -v zsh >/dev/null 2>&1 && [[ -f "$HOME/.zshrc" ]]; then
+        SHELL_STATUS[zsh]=1
+    fi
+    
+    if command -v fish >/dev/null 2>&1 && [[ -d "$HOME/.config/fish" ]]; then
+        SHELL_STATUS[fish]=1
+    fi
+
+    # Return array by reference
+    declare -p SHELL_STATUS
+}
+
+
 db_ops() {
     local operation="$1"
     local binary_name="$2"
@@ -706,7 +737,8 @@ db_ops() {
         "add")
             local repo_name="$1"
             local version="$2"
-            local -n files_ref="$3"
+            local -n files_ref="$3"      # Reference to sorted_install_map
+            local -n types_ref="$4"      # Reference to sorted_files
             
             local ghpm_id=$(uuidgen 2>/dev/null || date +%s%N)
             local current_time=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
@@ -714,13 +746,20 @@ db_ops() {
             # Convert install_files associative array to JSON
             local files_json="["
             local first=true
-            for key in "${!files_ref[@]}"; do
+            
+            # Iterate through sorted_files to get proper type categorization
+            for type in "${!types_ref[@]}"; do
+                local source_file="${types_ref[$type]}"
+                local basename_file=$(basename "$source_file")
+                local install_path="${files_ref[$basename_file]}"
+                
                 [[ "$first" = true ]] || files_json+=","
                 first=false
+                
                 files_json+=$(jq -n \
-                    --arg name "$(basename "${files_ref[$key]}")" \
-                    --arg path "${files_ref[$key]}" \
-                    --arg type "$key" \
+                    --arg name "$basename_file" \
+                    --arg path "$install_path" \
+                    --arg type "$type" \
                     '{name: $name, location: $path, type: $type}')
             done
             files_json+="]"
@@ -806,13 +845,18 @@ db_ops() {
 
 setup_paths() {
     # Check for traditional shells
+    eval $(detect_installed_shells)
+
     local shell_files=()
     [[ -f "$HOME/.bashrc" ]] && shell_files+=("$HOME/.bashrc")
     [[ -f "$HOME/.zshrc" ]] && shell_files+=("$HOME/.zshrc")
     
     # Setup for bash/zsh
     for rc_file in "${shell_files[@]}"; do
-        # Check and add newline first if needed
+        # Skip if shell is not available
+        shell_name=$(basename "${rc_file%rc}")
+        [[ "${SHELL_STATUS[$shell_name]}" -eq 0 ]] && continue
+        
         if [[ -f "$rc_file" ]]; then
             [[ "$(tail -c1 "$rc_file" | wc -l)" -eq 0 ]] || echo "" >> "$rc_file"
         fi
@@ -851,6 +895,52 @@ setup_paths() {
 }
 
 install_package() {
+    local -n source_files=$1      # Reference to sorted_files array
+    local -n install_locations=$2  # Reference to sorted_install_map array
+    local binary_name="$3"        # Name of the binary for db operations
+    
+    # Create necessary directories
+    for target in "${install_locations[@]}"; do
+        mkdir -p "$(dirname "$target")"
+    done
+
+    # Install all files
+    local success=true
+    for key in "${!source_files[@]}"; do
+        local source="${source_files[$key]}"
+        local basename_source=$(basename "$source")
+        local target="${install_locations[$basename_source]}"
+        
+        if [[ -z "$target" ]]; then
+            log "ERROR" "No target location found for $basename_source"
+            success=false
+            continue
+        fi
+        
+        if ! mv "$source" "$target"; then
+            log "ERROR" "Failed to move $source to $target"
+            success=false
+            continue
+        fi
+        
+        # Set executable bit for binary
+        if [[ "$key" == "binary" ]]; then
+            chmod +x "$target"
+        fi
+        
+        echo "Installed $key: $target"
+    done
+
+    if ! $success; then
+        log "ERROR" "One or more files failed to install"
+        return 1
+    fi
+
+    return 0
+}
+
+
+standalone_install() {
     local repo_name="$1"
     
     # Fetch and process asset data
@@ -866,11 +956,12 @@ install_package() {
         return 1
     fi
 
-    asset_url=$(echo "$processed_data" | jq -r '.chosen_asset.url')
-    man1_url=($(echo "$processed_data" | jq -r '.man_files[].url // empty'))
-    completions_url=($(echo "$processed_data" | jq -r '.completions_files[].url // empty'))
-    version=$(echo "$processed_data" | jq -r '.version')
-    asset_name=$(echo "$processed_data" | jq -r '.chosen_asset.name')
+    # Extract necessary URLs and information
+    local asset_url=$(echo "$processed_data" | jq -r '.chosen_asset.url')
+    local man1_url=$(echo "$processed_data" | jq -r '.man_files[0].url // empty')
+    local completions_url=$(echo "$processed_data" | jq -r '.completions_files[0].url // empty')
+    local version=$(echo "$processed_data" | jq -r '.version')
+    local asset_name=$(echo "$processed_data" | jq -r '.chosen_asset.name')
 
     if [[ -z "$asset_url" ]]; then
         log "ERROR" "No suitable asset found for $repo_name"
@@ -879,8 +970,10 @@ install_package() {
 
     # Prepare files for installation
     get_cache_paths "$repo_name"
-    declare -A install_files
-    if ! prep_install_files "$processed_data" "$asset_url" "$man1_url" "$completions_url" install_files; then
+    declare -A sorted_files
+    declare -A sorted_install_map
+    
+    if ! prep_install_files "$processed_data" "$asset_url" "$man1_url" "$completions_url" sorted_files sorted_install_map; then
         log "ERROR" "Failed to prepare installation files"
         return 1
     fi
@@ -890,40 +983,30 @@ install_package() {
     echo "Latest version: $version"
     echo "Release asset: $asset_name"
     echo "Files to install:"
-
-    declare -a installed_files=()  # Initialize array to track all installed files
-    local binary_name
-
-    if [[ -n "${install_files[binary]:-}" ]]; then
-        binary_name=$(basename "${install_files[binary]}")
-        printf "    %-20s --> %s\n" "$binary_name" "$INSTALL_DIR/$binary_name"
-    fi
-
-    # Display man pages
-    for key in "${!install_files[@]}"; do
-        if [[ "$key" =~ ^man[1-9]_[0-9]+$ ]]; then
-            local section="${key%%_*}"
-            section="${section#man}"
-            local man_name=$(basename "${install_files[$key]}")
-            printf "    %-20s --> %s\n" "$man_name" "$MAN_DIR/man$section/$man_name"
+    
+    # First display binary
+    for key in "${!sorted_files[@]}"; do
+        if [[ "$key" == "binary" ]]; then
+            local source="${sorted_files[$key]}"
+            local basename_source=$(basename "$source")
+            local target="${sorted_install_map[$basename_source]}"
+            printf "    %-20s --> %s\n" "$basename_source" "$target"
+            break
         fi
     done
-
-    # Display shell completions
-    for shell in bash zsh fish; do
-        local completion_key="${shell}-completions"
-        if [[ -n "${install_files[$completion_key]:-}" ]]; then
-            local comp_name=$(basename "${install_files[$completion_key]}")
-            case "$shell" in
-                bash) target_dir="$BASH_COMPLETION_DIR" ;;
-                zsh)  target_dir="$ZSH_COMPLETION_DIR" ;;
-                fish) target_dir="$FISH_COMPLETION_DIR" ;;
-            esac
-            printf "    %-20s --> %s\n" "$comp_name" "$target_dir/$comp_name"
+    
+    # Then display other files
+    for key in "${!sorted_files[@]}"; do
+        if [[ "$key" != "binary" ]]; then
+            local source="${sorted_files[$key]}"
+            local basename_source=$(basename "$source")
+            local target="${sorted_install_map[$basename_source]}"
+            printf "    %-20s --> %s\n" "$basename_source" "$target"
         fi
     done
     echo
 
+    # Confirm installation
     read -p "Proceed with installation? [y/N]: " -r
     if [[ ! "$REPLY" =~ ^[Yy]$ ]]; then
         echo "Installation canceled."
@@ -931,55 +1014,27 @@ install_package() {
     fi
 
     echo "Installing files..."
-    declare -A final_install_files
-
-     # Install binary
-    if [[ -n "${install_files[binary]}" ]]; then
-        local binary_dest="$INSTALL_DIR/$(basename "${install_files[binary]}")"
-        mkdir -p "$INSTALL_DIR"
-        if cp "${install_files[binary]}" "$binary_dest" && chmod +x "$binary_dest"; then
-            echo "Installed binary: $binary_dest"
-            final_install_files[binary]="$binary_dest"  # Track in associative array
-        fi
-    fi
-
-     # Install man pages
-    for key in "${!install_files[@]}"; do
-        if [[ "$key" =~ ^man[1-9]_[0-9]+$ ]]; then
-            local section="${key%%_*}"
-            section="${section#man}"
-            local man_dest="$MAN_DIR/man$section/$(basename "${install_files[$key]}")"
-            mkdir -p "$MAN_DIR/man$section"
-            if cp "${install_files[$key]}" "$man_dest"; then
-                echo "Installed man page: $man_dest"
-                final_install_files[$key]="$man_dest"  # Track in associative array
-            fi
+    
+    # Get binary name for database operations
+    local binary_name
+    for key in "${!sorted_files[@]}"; do
+        if [[ "$key" == "binary" ]]; then
+            binary_name=$(basename "${sorted_files[$key]}")
+            break
         fi
     done
-    # Install completions
-    for shell in bash zsh fish; do
-        local completion_key="${shell}-completions"
-        if [[ -n "${install_files[$completion_key]:-}" ]]; then
-            case "$shell" in
-                bash) target_dir="$BASH_COMPLETION_DIR" ;;
-                zsh)  target_dir="$ZSH_COMPLETION_DIR" ;;
-                fish) target_dir="$FISH_COMPLETION_DIR" ;;
-            esac
-            local completion_dest="$target_dir/$(basename "${install_files[$completion_key]}")"
-            mkdir -p "$target_dir"
-            if cp "${install_files[$completion_key]}" "$completion_dest"; then
-                echo "Installed $shell completion: $completion_dest"
-                final_install_files[$completion_key]="$completion_dest"  # Track in associative array
-            fi
-        fi
-    done
-    # Update the database if files were installed
-    if [[ ${#final_install_files[@]} -gt 0 && -n "$binary_name" ]]; then
-        if ! db_ops add "$binary_name" "$repo_name" "$version" "final_install_files"; then
-            log "ERROR" "Failed to update package database"
-            return 1
-        fi
+
+    # Perform installation
+    if ! install_package sorted_files sorted_install_map "$binary_name"; then
+        log "ERROR" "Installation failed"
+        return 1
     fi
+
+    if ! db_ops add "$binary_name" "$repo_name" "$version" "sorted_install_map" "sorted_files" ; then
+        log "ERROR" "Failed to update package database"
+        return 1
+    fi
+
     setup_paths
     return 0
 }
@@ -995,7 +1050,7 @@ main() {
                 echo "Usage: $0 install owner/repo"
                 return 1
             fi
-            install_package "$repo_name" ;;
+            standalone_install "$repo_name" ;;
         
         "--clear-cache")
             rm -rf $CACHE_DIR ;;
