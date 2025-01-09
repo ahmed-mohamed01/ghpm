@@ -1,2 +1,5 @@
 
 .local
+.config
+.config/fish/completions/eza.fish
+.gitignore
