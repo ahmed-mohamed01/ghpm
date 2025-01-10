@@ -1,0 +1,12 @@
+ajeetdsouza/zoxide
+
+sharkdp/bat
+sharkdp/fd
+BurntSushi/ripgrep
+junegunn/fzf
+eza-community/eza
+jesseduffield/lazygit
+# olh
+
+tldr-pages/tldr-c-client
+zyedidia/micro
