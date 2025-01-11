@@ -549,11 +549,12 @@ get_dependencies() {
 }
 
 prep_install_files() {
-    local main_url="$1"
-    local man_url="$2" 
-    local completions_url="$3"
-    local -n return_sorted_files=$4
-    local -n return_install_map=$5
+    local repo_name="$1"
+    local main_url="$2"
+    local man_url="$3" 
+    local completions_url="$4"
+    local -n return_sorted_files=$5
+    local -n return_install_map=$6
     eval $("detect_installed_shells")
 
     rm -rf "$REPO_EXTRACTED_DIR"
@@ -920,7 +921,7 @@ standalone_install() {
     declare -A sorted_files
     declare -A sorted_install_map
     
-    if ! prep_install_files "$asset_url" "$man1_url" "$completions_url" sorted_files sorted_install_map; then
+    if ! prep_install_files "$repo_name" "$asset_url" "$man1_url" "$completions_url" sorted_files sorted_install_map; then
         log "ERROR" "Failed to prepare installation files"
         return 1
     fi
@@ -1074,12 +1075,12 @@ batch_install() {
                 
                 # Setup for installation
                 get_cache_paths "${repo_list[i]}"
-                unset sorted_files
-                unset sorted_install_map
+                # unset sorted_files
+                # unset sorted_install_map
                 declare -A sorted_files
                 declare -A sorted_install_map
                 
-                if prep_install_files "${main_urls[i]}" "${man_urls[i]}" "${comp_urls[i]}" sorted_files sorted_install_map; then
+                if prep_install_files "${repo_list[i]}" "${main_urls[i]}" "${man_urls[i]}" "${comp_urls[i]}" sorted_files sorted_install_map; then
                     if install_package "batch" sorted_files sorted_install_map; then
                         # Update database
                         if db_ops add "${binary_names[i]}" "${repo_list[i]}" "${gh_versions[i]}" sorted_install_map sorted_files; then
