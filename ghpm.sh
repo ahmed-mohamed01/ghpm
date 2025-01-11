@@ -728,21 +728,19 @@ db_ops() {
             local files_json="["
             local first=true
             
-            # Use the type-based keys to keep everything in sync
             for key in "${!types_ref[@]}"; do
                 [[ "$first" = true ]] || files_json+=","
                 first=false
-                # Extract base type by removing the counter suffix
                 local base_type=$(echo "$key" | sed 's/_[0-9]\+$//')
                 
-                 files_json+=$(jq -n \
+                files_json+=$(jq -n \
                     --arg name "$(basename "${types_ref[$key]}")" \
                     --arg path "${files_ref[$key]}" \
                     --arg type "$base_type" \
                     '{name: $name, location: $path, type: $type}')
             done
             files_json+="]"
-            # Create and add package entry
+
             if ! jq --arg name "$binary_name" \
                    --arg repo "$repo_name" \
                    --arg id "$ghpm_id" \
@@ -784,20 +782,17 @@ db_ops() {
             ;;
             
         "list")
-            # Check if DB exists and is not empty
             if [[ ! -f "$DB_FILE" ]] || [[ "$(jq 'length' "$DB_FILE")" -eq 0 ]]; then
                 echo "No packages installed via GHPM."
                 return 0
             fi
 
-            # Print header
             echo
             echo "Packages managed by this script:"
             echo
             printf "%-15s %-12s %-s\n" "Package" "Version" "Location"
             printf "%s\n" "-------------------------------------------------------"
 
-            # Process and display the package information
             jq -r '
                 to_entries[] |
                 select(.value.installed_files != null) |
@@ -805,9 +800,9 @@ db_ops() {
                 .value.installed_files[] |
                 select(.type == "binary") |
                 [
-                    $root.key,                  # Package name
-                    $root.value.version,        # Version
-                    .location                   # Binary location
+                    $root.key,
+                    $root.value.version,
+                    .location
                 ] |
                 @tsv
             ' "$DB_FILE" | while IFS=$'\t' read -r package version location; do
@@ -816,7 +811,12 @@ db_ops() {
             ;;
             
         "get")
-            jq --arg name "$binary_name" '.[$name] // empty' "$DB_FILE"
+            # Check if the key exists first
+            if ! jq -e --arg name "$binary_name" 'has($name)' "$DB_FILE" >/dev/null; then
+                return 1
+            fi
+            # If it exists, output the value
+            jq --arg name "$binary_name" '.[$name]' "$DB_FILE"
             ;;
     esac
 }
@@ -1127,6 +1127,64 @@ batch_install() {
     esac
 }
 
+remove_package() {
+    local binary_name="$1"
+    # First check if package was installed by ghpm
+    if ! package_info=$(db_ops get "$binary_name"); then
+        echo "Error: Package $binary_name is not managed by this script"
+    fi
+    local repo_name=$(echo "$package_info" | jq -r '.repo')
+    local version=$(echo "$package_info" | jq -r '.version')
+
+    local files_to_remove=($(echo "$package_info" | jq -r '.installed_files[].location'))
+    if [[ ${#files_to_remove[@]} -eq 0 ]]; then
+        log "ERROR" "No installed files found for $binary_name"
+        return 1
+    fi
+    # Display removal information
+    echo -e "\nRemoving package: $binary_name"
+    echo "Repository: $repo_name"
+    echo "Installed version: $version"
+    echo -e "\nFiles to be removed:"
+    printf '%s\n' "${files_to_remove[@]/#/    }"
+
+    read -p $'\nProceed with removal? [y/N]: ' -r
+    [[ ! "$REPLY" =~ ^[Yy]$ ]] && echo "Removal cancelled." && return 1
+    
+    local binary_path="${files_to_remove[0]}"
+    for file in "${files_to_remove[@]}"; do
+        if [[ -f "$file" ]]; then
+            if rm -f "$file" 2>/dev/null; then
+                ((removed_count++))
+            else
+                log "ERROR" "Failed to remove: $file"
+                ((erorr_count++))
+            fi
+        else
+            log "WARNING" "File not found: $file"
+        fi
+    done
+
+    if ! db_ops remove "$binary_name"; then
+        log "ERROR" "Failed to update database"
+        remove_success=false
+    fi
+
+    echo -e "\nRemoval Summary:"
+    echo "Files removed successfully: $removed_count"
+    [[ $error_count -gt 0 ]] && echo "Files failed to remove: $error_count"
+    
+    if $remove_success; then
+        echo -e "\nPackage $binary_name removed successfully"
+        return 0
+    else
+        echo -e "\nPackage $binary_name removed with errors"
+        return 1
+    fi
+
+
+}
+
 main() {
     local cmd="$1"
     shift
@@ -1139,6 +1197,14 @@ main() {
                 return 1
             fi
             standalone_install "$repo_name" ;;
+
+        "remove")
+            local binary_name="$1"
+            if [[ -z "$binary_name" ]]; then
+                echo "Usage: $0 remove <package-name>"
+                return 1
+            fi
+            remove_package "$binary_name" ;;
         
         "--clear-cache")
             rm -rf $CACHE_DIR ;;
@@ -1149,7 +1215,7 @@ main() {
 
         "--list")
             db_ops list ;;
-        
+
         "--version")
             echo "0.2.5" ;;
 
@@ -1157,6 +1223,8 @@ main() {
             echo "Usage: $0 <command> [options]"
             echo "Commands:"
             echo "  install <owner/repo>    Install a package from GitHub"
+            echo "  remove <package>        Uninstalls a package."
+            echo "  --file <file.txt>       Accepts a list of repositories from a file."
             echo "  --list                  List installed packages"
             echo "  --clear-cache           Clear the cache"
             echo "  --version               Show version"
