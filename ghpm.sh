@@ -1,7 +1,7 @@
 #! /usr/bin/env bash
 
 #set -euo pipefail      # set -e error handling, -u undefined variable protection -o pipefail piepline faulure catching. 
-DISPLAY_ISSUES=true   # make log output visible. 
+DISPLAY_ISSUES=false # make log output visible. 
 
 # Configure folders
 DATA_DIR="${PWD}/.local/share/ghpm"
@@ -38,6 +38,7 @@ get_cache_paths() {
 declare -a ISSUES=()
 readonly YELLOW='\033[1;33m'
 readonly RED='\033[0;31m'
+readonly GREEN='\033[0;32m'
 readonly NC='\033[0m'
 
 # Store important 
@@ -65,6 +66,24 @@ log() {
         local color
         [[ "$severity" == "WARNING" ]] && color="$YELLOW" || color="$RED"
         printf "${color}%s: %s${NC}\n" "$severity" "$message" >&2
+    fi
+}
+
+progress() {
+    local msg="$1"
+    local exit_status="$2"
+    
+    if [[ -z "$exit_status" ]]; then
+        # Start mode
+        printf "%s..." "$msg"
+    else
+        # End mode
+        if [[ $exit_status == 0 ]]; then
+            printf "\r\033[K%s... ${GREEN}Success!${NC}\n" "$msg"
+        else
+            printf "\r\033[K%s... ${RED}Failed!${NC}\n" "$msg"
+        fi
+        return $exit_status
     fi
 }
 
@@ -688,7 +707,7 @@ detect_installed_shells() {
 
 db_ops() {
     local operation="$1"
-    local binary_name="$2"
+    local binary_name="${2:-}"
     shift 2
 
     # Ensure DB exists
@@ -1067,36 +1086,24 @@ batch_install() {
     case $choice in
         1)
             echo "Installing ${#repo_list[@]} packages from GitHub..."
+            echo
             local success_count=0
-
             for i in "${!repo_list[@]}"; do
-                echo
-                echo "Installing ${binary_names[i]} from ${repo_list[i]}..."
-                
-                # Setup for installation
                 get_cache_paths "${repo_list[i]}"
-                # unset sorted_files
-                # unset sorted_install_map
-                declare -A sorted_files
-                declare -A sorted_install_map
+                declare -A sorted_files sorted_install_map
                 
-                if prep_install_files "${repo_list[i]}" "${main_urls[i]}" "${man_urls[i]}" "${comp_urls[i]}" sorted_files sorted_install_map; then
-                    if install_package "batch" sorted_files sorted_install_map; then
-                        # Update database
-                        if db_ops add "${binary_names[i]}" "${repo_list[i]}" "${gh_versions[i]}" sorted_install_map sorted_files; then
-                            ((success_count++))
-                            echo "Successfully installed ${binary_names[i]}"
-                        else
-                            log "WARNING" "Failed to update database for ${binary_names[i]}"
-                        fi
-                    else
-                        log "WARNING" "Failed to install ${binary_names[i]}"
-                    fi
-                else
-                    log "WARNING" "Failed to prepare files for ${binary_names[i]}"
-                fi
+                progress "Installing ${binary_names[i]}"
+
+                prep_install_files "${repo_list[i]}" "${main_urls[i]}" "${man_urls[i]}" "${comp_urls[i]}" sorted_files sorted_install_map && \
+                install_package "batch" sorted_files sorted_install_map && \
+                db_ops add "${binary_names[i]}" "${repo_list[i]}" "${gh_versions[i]}" sorted_install_map sorted_files
+
+                progress "Installing ${binary_names[i]}" $?
+                [[ $? == 0 ]] && ((success_count++))
+
+                # Log errors if needed
+                [[ $? != 0 ]] && log "ERROR" "Failed to install ${repo_list[i]}"
             done
-            
             # Setup paths after all installations
             setup_paths
             
