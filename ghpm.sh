@@ -556,6 +556,13 @@ prep_install_files() {
     local -n return_install_map=$5
     eval $("detect_installed_shells")
 
+    rm -rf "$REPO_EXTRACTED_DIR"
+    mkdir -p "$REPO_EXTRACTED_DIR"
+    
+    # Clear the return arrays
+    return_sorted_files=()
+    return_install_map=()
+
     # Type-specific counters to handle multiple files of same type
     declare -A type_counters=()
 
@@ -577,6 +584,7 @@ prep_install_files() {
         log "ERROR" "Unable to download main asset"
         return 1
     fi
+    
 
     # Download and extract all provided URLs
     local urls=("$man_url" "$completions_url")
@@ -676,7 +684,6 @@ detect_installed_shells() {
     # Return array by reference
     declare -p SHELL_STATUS
 }
-
 
 db_ops() {
     local operation="$1"
@@ -966,14 +973,12 @@ standalone_install() {
 
 batch_install() {
     local repos_file=$1
-    local repos
 
-    # # Load repositories from file
-    # if [[ ! -f "$repos_file" ]]; then
-    #     echo "Error: Repositories file '$repos_file' not found."
-    #     return 1
-    # fi
-    # mapfile -t repos < "$repos_file"
+    # Validate file exists
+    if [[ ! -f "$repos_file" ]]; then
+        log "ERROR" "Repositories file '$repos_file' not found."
+        return 1
+    fi
 
     echo "Processing (${#repos[@]}) repositories from $repos_file:"
     echo
@@ -981,47 +986,75 @@ batch_install() {
     printf "%-15s %-12s %-12s %-50s\n" "Binary" "Github" "APT" "Asset"
     echo "------------------------------------------------------------------------------------------------"
 
+    # Initialize and update lists of packages
+    local repo_list=()
+    local binary_names=()
+    local gh_versions=()
+    local apt_versions=()
+    declare -a assets=()
+    declare -a main_urls=()
+    declare -a man_urls=()
+    declare -a comp_urls=()
+
     while IFS= read -r line; do
         # Trim leading and trailing whitespace
-        line=$(echo "$line" | xargs)
-        if [[ -n "$line" && ! "$line" =~ ^# ]]; then     # skip comments and blank lines. 
-            if [[ "$line" == *"|"* ]]; then
-                IFS='|' read -r repo alias <<< "$line"
-                repo_name=$(echo "$repo" | xargs)
-                alias=$(echo "$alias" | xargs)
-            else
-                repo_name="$line"
-                binary_name=$(echo "$line" | awk -F'/' '{print $2}')
-            fi
-            # Query github api and get chosen asset info
-            local gh_response=$(query_github_api "$repo_name")
-            local processed_files=$(process_asset_data "$gh_response")
-            local github_version=$(echo "$processed_files" | jq -r '.version')
-            local most_suitable_asset=$(echo "$processed_files" | jq -r '.chosen_asset.name')
-
-            # Find apt version
-            apt_version=$(apt-cache policy "$binary_name" | grep 'Candidate:' | sed -E 's/.*Candidate: //; s/-[^-]*ubuntu[^-]*//; s/-$//; s/[^0-9.].*//; s/^/v/')
-            if [[ -z "$apt_version" || "$apt_version" == "none" ]]; then
-                apt_version="not found"
-            fi
-
-            # Initialize and update lists of packages
-            local binary_names=()
-            local github_versions=()
-            local apt_versions=()
-            local repo_list=()
-
-            binary_names+=("$binary_name")
-            repo_list+=("$repo_name")
-            github_versions+=("$github_version")
-            apt_versions+=("$apt_version")
-
-            printf "%-15s %-12s %-12s %-50s\n" "$binary_name" "$github_version" "$apt_version" "$most_suitable_asset"
+        [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
+        local repo_name binary_name
+        if [[ "$line" == *"|"* ]]; then
+            IFS='|' read -r repo_name binary_name <<< "$line"
+            repo_name=$(echo "$repo_name" | xargs)
+            binary_name=$(echo "$binary_name" | xargs)
+        else
+            repo_name=$(echo "$line" | xargs)
+            binary_name=$(echo "$repo_name" | cut -d'/' -f2)
+        fi
+        # Query github api and get chosen asset info
+        local gh_response=$(query_github_api "$repo_name")
+        local processed_files=$(process_asset_data "$gh_response")
+        local github_version="$(echo "$processed_files" | jq -r '.version')"
+        
+        # extract needed info 
+        local gh_version best_asset main_url man_url comp_url
+        read -r gh_version best_asset main_url man_url comp_url < <(echo "$processed_files" | jq -r '[
+            .version,
+            .chosen_asset.name,
+            .chosen_asset.url,
+            (.man_files[0].url // ""),
+            (.completions_files[0].url // "")
+        ] | @tsv')
+        # Find apt version
+        if command -v apt-cache >/dev/null 2>&1; then
+            apt_version=$(apt-cache policy "$binary_name" 2>/dev/null | grep 'Candidate:' | sed -E 's/.*Candidate: //; s/-[^-]*ubuntu[^-]*//; s/-$//; s/[^0-9.].*//; s/^/v/')
+            [[ -z "$apt_version" || "$apt_version" == "none" ]] && apt_version="not found"
         fi
 
-        
-    done < "$repos_file"
+        binary_names+=("$binary_name")
+        repo_list+=("$repo_name")
+        gh_versions+=("$gh_version")
+        assets+=("$best_asset")
+        apt_versions+=("$apt_version")
+        main_urls+=("$main_url")
+        man_urls+=("$man_url")
+        comp_urls+=("$comp_url")
 
+        printf "%-15s %-12s %-12s %-50s\n" "$binary_name" "$gh_version" "$apt_version" "$best_asset"
+    done < "$repos_file"
+    if [[ ${#repo_list[@]} -eq 0 ]]; then
+            log "ERROR" "No valid repositories found in $repos_file"
+            return 1
+    fi
+
+    dependencies="none"
+    echo
+    echo "Needed dependencies: $dependencies"
+
+    if [[ ${#dependencies_list[@]} -eq 0 ]]; then
+        dependencies="no dependencies to install"
+    else
+        for dep in ${dependencies_list[@]}; do
+            echo "$dep"
+        done
+    fi
     # Display installation options
     echo 
     echo "Installation options:"
@@ -1032,27 +1065,42 @@ batch_install() {
 
     case $choice in
         1)
-            for repo in "${!repo_list[@]}"; do
-                echo "$repo_list[$repo]"
-            done
-            for repo in "${!repo_list[@]}"; do
-                get_cache_paths "$repo_name"
-                local gh_response=$(query_github_api "$repo_name")
-                local binary_name=$(echo "$line" | awk -F'/' '{print $2}')
-                local processed_files=$(process_asset_data "$gh_response")
-                local main_asset_url=$(echo "$processed_files" | jq -r '.chosen_asset.url')
-                local man_file_url=$(echo "$processed_files" | jq -r '.man_filesp[0].url')
-                local comp_url=$(echo "$processed_files" | jq -r '.completions_assets[0].url')
-                prep_install_files "$main_asset_url" "$man_file_url" "$comp_url" sorted_files sorted_install_map
-                echo "Installing ${binary_names[i]}..."
-                install_package "batch" "sorted_files" "sorted_install_map"
-                if install_package "standalone" sorted_files sorted_install_map ; then
-                    log "DEBUG" "Package installed"
-                    db_ops "add" "$binary_name" "$repo_name" "$version" "sorted_install_map" "sorted_files"
-                    
+            echo "Installing ${#repo_list[@]} packages from GitHub..."
+            local success_count=0
+
+            for i in "${!repo_list[@]}"; do
+                echo
+                echo "Installing ${binary_names[i]} from ${repo_list[i]}..."
+                
+                # Setup for installation
+                get_cache_paths "${repo_list[i]}"
+                unset sorted_files
+                unset sorted_install_map
+                declare -A sorted_files
+                declare -A sorted_install_map
+                
+                if prep_install_files "${main_urls[i]}" "${man_urls[i]}" "${comp_urls[i]}" sorted_files sorted_install_map; then
+                    if install_package "batch" sorted_files sorted_install_map; then
+                        # Update database
+                        if db_ops add "${binary_names[i]}" "${repo_list[i]}" "${gh_versions[i]}" sorted_install_map sorted_files; then
+                            ((success_count++))
+                            echo "Successfully installed ${binary_names[i]}"
+                        else
+                            log "WARNING" "Failed to update database for ${binary_names[i]}"
+                        fi
+                    else
+                        log "WARNING" "Failed to install ${binary_names[i]}"
+                    fi
+                else
+                    log "WARNING" "Failed to prepare files for ${binary_names[i]}"
                 fi
-                echo "Installed ${binary_names[i]}"
             done
+            
+            # Setup paths after all installations
+            setup_paths
+            
+            echo
+            echo "Installation complete: $success_count/${#repo_list[@]} packages installed successfully"
             ;;
         2)
             apt_install binary_names[@]
