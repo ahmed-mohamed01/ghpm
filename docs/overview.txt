@@ -176,9 +176,9 @@ has a --update option which will one option, a package name
 
         Checking for update ...
                         
-        Package      Current Version    Latest release         
-        -------------------------------------------------------
-        zoxide       0.9.6              0.9.7
+        Package      Current    Latest    Release asset     
+        --------------------------------------------------------------------------------
+        zoxide       0.9.6      0.9.7     zoxide-0.9.7-amd64-linux-musl.tar.gz
 
         Additional dependencies: No
 
@@ -194,10 +194,9 @@ Has a --remove [package] option
         Remove zoxide v0.9.6?
 
         This will remove the following files:
-
-        /home/ahmed/.local/bin/zoxide
-        /home/ahmed/.local/share/man/man1/zoxide
-        /home/ahmed/.local/share/completions/zsh-completions/_zoxide
+                /home/ahmed/.local/bin/zoxide
+                /home/ahmed/.local/share/man/man1/zoxide
+                /home/ahmed/.local/share/completions/zsh-completions/_zoxide
 
         Proceed? [y/N]
 
