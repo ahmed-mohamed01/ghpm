@@ -1,7 +1,7 @@
 #! /usr/bin/env bash
 
 #set -euo pipefail      # set -e error handling, -u undefined variable protection -o pipefail piepline faulure catching. 
-DISPLAY_ISSUES=false # make log output visible. 
+DISPLAY_ISSUES=true # make log output visible. 
 
 # Configure folders
 DATA_DIR="${PWD}/.local/share/ghpm"
@@ -33,7 +33,6 @@ get_cache_paths() {
     mkdir -p "$REPO_CACHE_DIR" "$REPO_ASSETS_DIR" "$REPO_EXTRACTED_DIR"
 }
 
-
 # Colors to be used in output
 declare -a ISSUES=()
 readonly YELLOW='\033[1;33m'
@@ -56,15 +55,37 @@ if [[ "$os_type" == "Linux" ]]; then
     fi
 fi
 
-# Log function will append debeug info to arrays for easier output. 
+# Log function will append debeug info to arrays for easier output, display can be toggled with DISPLAY_ISSUES=true
 log() {
-    local severity="${1^^}"  # Uppercase severity
-    local message="$2"
+    local severity="" message="" mode=""
+
+    # Handle different argument patterns
+    if [[ "${1^^}" == "QUIET" ]]; then  # We already convert to uppercase
+        mode="quiet" && severity="${2^^}" && message="$3"
+    else
+        severity="${1^^}" && message="$2"
+    fi
+
+    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+    local LOG_DIR="${PWD}/.local/share/ghpm/logs"
+    local LOG_FILE="$LOG_DIR/ghpm.log"
+    mkdir -p "$LOG_DIR"
+
+    # Add to ISSUES array for summary
     ISSUES+=("${severity}:${message}")
     
-    if [[ "$DISPLAY_ISSUES" = true ]]; then
+    # Log to file
+    echo "[$timestamp] ${severity}: ${message}" >> "$LOG_FILE"
+    
+    # Log to console if display is enabled
+    if [[ "$DISPLAY_ISSUES" = true && "$mode" != "quiet" ]]; then
         local color
-        [[ "$severity" == "WARNING" ]] && color="$YELLOW" || color="$RED"
+        case "$severity" in
+            "ERROR") color="$RED" ;;
+            "INFO") color="$GREEN" ;;
+            "DEBUG") color="$YELLOW" ;;
+            *) color="$NC" ;;
+        esac
         printf "${color}%s: %s${NC}\n" "$severity" "$message" >&2
     fi
 }
@@ -89,12 +110,10 @@ progress() {
 
 # This will ensure input is valid, check cache to see if it exists, otherwise fetch and cache api_response.
 # Output is full output from github api
-
 query_github_api() {
     local input="$1"
     local ttl=36000    # Cache ttl/valid period, set at 600min
     local current_time=$(date +%s)
-
 
     # Parse and validate input
     local repo_name
@@ -108,7 +127,8 @@ query_github_api() {
             binary_name=${repo_name##*/}
         fi
     else
-        log "ERROR" "Invalid format. Use 'owner/repo'"
+        echo "Invalid format. Use 'owner/repo'"
+        log quiet "ERROR" "Invalid entry $input"
         return 1
     fi
 
@@ -130,15 +150,16 @@ query_github_api() {
             if (( current_time - cache_timestamp < ttl )); then
                 # Extract the 'data' field to pass to response processing
                 echo "$repo_cached_data" | jq -c '.data | . + {_source: "cache"}'
+                log quiet "INFO" "Using cached data for $repo_name" quiet
                 return 0
             else
-                log "WARNING" "Cache expired for $repo_name. Refreshing..." >&2
+                log "INFO" "Cache expired for $repo_name. Refreshing..."
             fi
         else
-            log "WARNING" "No cache entry found for $repo_name"
+            log "INFO" "No cache entry found for $repo_name" quiet
         fi
     else
-        log "WARNING" "Cache file not found, creating a new file at $CACHE_FILE"
+        log "INFO" "Cache file not found, creating a new file at $CACHE_FILE" 
     fi
 
     # Fetch from GitHub API
@@ -177,6 +198,7 @@ query_github_api() {
                 jq -n --arg repo "$repo_name" --argjson new_data "$new_cache_data" \
                    '{($repo): $new_data}' > "$CACHE_FILE"
             fi
+            log quiet "INFO" "GitHub api response obtained and cached for $repo_name"
             echo "$api_response"
             ;;
         401) log "ERROR" "Authentication failed for $repo_name. Check GITHUB_TOKEN."; return 1 ;;
@@ -209,11 +231,11 @@ process_asset_data() {
         if cached_data=$(jq -r --arg repo "$repo" --arg version "$version" \
             'select(.repo == $repo and .version == $version)' "$cache_file" 2>/dev/null) && \
             [[ "$cached_data" != "null" ]] && [[ -n "$cached_data" ]]; then
+            log quiet "INFO" "Using cached asset data: $cache_file"
             echo "$cached_data"
             return 0
         fi
     fi
-    
 
     # 3. If no cache matches, process the repo and output a json. 
     local chosen_asset=""
@@ -291,7 +313,6 @@ process_asset_data() {
     done < <(echo "$api_response" | jq -r '.assets[] | {name: .name, url: .browser_download_url} | @json')
 
     # Construct the final JSON with proper formatting
-    # Set existence flags
     local has_manfiles=false
     local has_completions=false
     local has_source=false
@@ -528,8 +549,8 @@ validate_binary() {
     )
 
     # Verify executable is actually a binary
-    local file_info
-    file_info=$(file -b "$binary_path")
+    local binary_name=$(basename $binary_path)
+    local file_info=$(file -b "$binary_path")
     if [[ ! "$file_info" =~ ${FILE_PATTERNS[$system_arch]} ]]; then
         log "ERROR" "Incompatible binary. Expected pattern: ${FILE_PATTERNS[$system_arch]} but got: $file_info"
         return 1
@@ -546,7 +567,7 @@ validate_binary() {
         dependencies=($(ldd "$binary_path" | awk '/=>/ {print $3}' | sort -u))
         export DEPENDENCIES=("${dependencies[@]}")
     else
-        log "INFO" "Binary is statically linked or does not require dynamic dependencies."
+        log quiet "INFO" "Binary $binary_name is statically linked or does not require dynamic dependencies."
     fi
 
     echo "$binary_path"
@@ -1102,7 +1123,7 @@ batch_install() {
                 [[ $? == 0 ]] && ((success_count++))
 
                 # Log errors if needed
-                [[ $? != 0 ]] && log "ERROR" "Failed to install ${repo_list[i]}"
+                [[ $? != 0 ]] && log quiet "ERROR" "Failed to install ${repo_list[i]}"
             done
             # Setup paths after all installations
             setup_paths
@@ -1151,37 +1172,48 @@ remove_package() {
     read -p $'\nProceed with removal? [y/N]: ' -r
     [[ ! "$REPLY" =~ ^[Yy]$ ]] && echo "Removal cancelled." && return 1
     
-    local binary_path="${files_to_remove[0]}"
+    # Remove all files, with special handling for binary
+    local remove_success=true
+    local error_count=0
+    local i=0
     for file in "${files_to_remove[@]}"; do
-        if [[ -f "$file" ]]; then
-            if rm -f "$file" 2>/dev/null; then
-                ((removed_count++))
-            else
-                log "ERROR" "Failed to remove: $file"
-                ((erorr_count++))
+        if [[ $i -eq 0 ]]; then
+            #progress "Removing binary"
+            rm -f "$file" 2>/dev/null
+            progress "Removing binary" $?
+            if [[ $? -ne 0 ]]; then
+                log "ERROR" "Failed to remove binary: $file"
+                return 1
             fi
         else
-            log "WARNING" "File not found: $file"
+            echo "Removing $file"
+            if [[ -f "$file" ]]; then
+                if ! rm -f "$file" 2>/dev/null; then
+                    log "ERROR" "Failed to remove: $file"
+                    remove_success=false
+                    ((error_count++))
+                fi
+            else
+                log "WARNING" "File not found: $file"
+            fi
         fi
+        ((i++))
     done
 
+    # Remove from database
     if ! db_ops remove "$binary_name"; then
-        log "ERROR" "Failed to update database"
+        echo "Failed to update database"
         remove_success=false
     fi
-
-    echo -e "\nRemoval Summary:"
-    echo "Files removed successfully: $removed_count"
-    [[ $error_count -gt 0 ]] && echo "Files failed to remove: $error_count"
+    progress "Removing database entry" $?
     
     if $remove_success; then
         echo -e "\nPackage $binary_name removed successfully"
         return 0
     else
-        echo -e "\nPackage $binary_name removed with errors"
+        echo -e "\nPackage $binary_name removed with errors. Please check $log_file"
         return 1
     fi
-
 
 }
 
@@ -1207,8 +1239,12 @@ main() {
             remove_package "$binary_name" ;;
         
         "--clear-cache")
-            rm -rf $CACHE_DIR ;;
-
+            rm -rf $CACHE_DIR 
+            echo "Purging cache.."
+            echo "Cache claered"
+            echo 
+            [[ "$1" -ne 1 ]] && log quiet "INFO" "Cache dir removed";;
+ 
         "--file")
             local repos_file="$1"
             batch_install "$repos_file" ;;
@@ -1217,7 +1253,7 @@ main() {
             db_ops list ;;
 
         "--version")
-            echo "0.2.5" ;;
+            echo "0.2.7" ;;
 
         *)
             echo "Usage: $0 <command> [options]"
