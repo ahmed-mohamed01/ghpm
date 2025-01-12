@@ -313,11 +313,7 @@ process_asset_data() {
     done < <(echo "$api_response" | jq -r '.assets[] | {name: .name, url: .browser_download_url} | @json')
 
     # Construct the final JSON with proper formatting
-    local has_manfiles=false
-    local has_completions=false
     local has_source=false
-    [[ ${#man_files[@]} -gt 0 ]] && has_manfiles=true
-    [[ ${#completions_files[@]} -gt 0 ]] && has_completions=true
     [[ ${#source_files[@]} -gt 0 ]] && has_source=true
 
     local final_json
@@ -328,8 +324,6 @@ process_asset_data() {
         \"viable_assets\": [$(IFS=,; echo "${viable_assets[*]:-}")],
         \"excluded_assets\": [$(IFS=,; echo "${excluded_assets[*]:-}")],
         \"source_files\": [$(IFS=,; echo "${source_files[*]:-}")],
-        \"has_man_files\": ${has_manfiles},
-        \"has_completions_files\": ${has_completions},
         \"has_source_files\": ${has_source},
         \"man_files\": [$(IFS=,; echo "${man_files[*]:-}")],
         \"completions_files\": [$(IFS=,; echo "${completions_files[*]:-}")]
