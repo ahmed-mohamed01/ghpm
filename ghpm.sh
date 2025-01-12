@@ -1080,9 +1080,10 @@ batch_install() {
 
 remove_package() {
     local binary_name="$1"
+    local quiet_mode="${2:-false}"
     # First check if package was installed by ghpm
     if ! package_info=$(db_ops get "$binary_name"); then
-        echo "Error: Package $binary_name is not managed by this script"
+        [[ "$quiet_mode" == "false" ]] && echo "Error: Package $binary_name is not managed by this script"
     fi
     local repo_name=$(echo "$package_info" | jq -r '.repo')
     local version=$(echo "$package_info" | jq -r '.version')
@@ -1093,15 +1094,16 @@ remove_package() {
         return 1
     fi
     # Display removal information
-    echo -e "\nRemoving package: $binary_name"
-    echo "Repository: $repo_name"
-    echo "Installed version: $version"
-    echo -e "\nFiles to be removed:"
-    printf '%s\n' "${files_to_remove[@]/#/    }"
+    if [[ "$quiet_mode" == "false" ]]; then
+        echo -e "\nRemoving package: $binary_name"
+        echo "Repository: $repo_name"
+        echo "Installed version: $version"
+        echo -e "\nFiles to be removed:"
+        printf '%s\n' "${files_to_remove[@]/#/    }"
 
-    read -p $'\nProceed with removal? [y/N]: ' -r
-    [[ ! "$REPLY" =~ ^[Yy]$ ]] && echo "Removal cancelled." && return 1
-    
+        read -p $'\nProceed with removal? [y/N]: ' -r
+        [[ ! "$REPLY" =~ ^[Yy]$ ]] && echo "Removal cancelled." && return 1
+    fi
     # Remove all files, with special handling for binary
     local remove_success=true
     local error_count=0
