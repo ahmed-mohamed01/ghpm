@@ -41,6 +41,42 @@ Installing files...
 Installed binary: /home/ahmed/ghpm/.local/bin/micro
 Installed man page: /home/ahmed/ghpm/.local/share/man/man1/micro.1
 
+# Batch install from a file. 
+$ ghpm --file repos.txt
+Processing (0) repositories from repos.txt:
+
+Checking repositor data...
+Binary          Github       APT          Asset                                             
+------------------------------------------------------------------------------------------------
+zoxide          v0.9.6       v0.4.3       zoxide-0.9.6-x86_64-unknown-linux-musl.tar.gz     
+bat             v0.25.0      v0.19.0      bat-v0.25.0-x86_64-unknown-linux-gnu.tar.gz       
+fd              v10.2.0      not found    fd-v10.2.0-x86_64-unknown-linux-gnu.tar.gz        
+ripgrep         14.1.1       v13.0.0      ripgrep-14.1.1-i686-unknown-linux-gnu.tar.gz      
+fzf             v0.57.0      v0.29.0      fzf-0.57.0-linux_amd64.tar.gz                     
+eza             v0.20.16     not found    eza_x86_64-unknown-linux-gnu.tar.gz               
+lazygit         v0.45.0      not found    lazygit_0.45.0_Linux_x86_64.tar.gz                
+tldr-c-client   v1.6.1       not found                                                      
+micro           v2.0.14      v2.0.9       micro-2.0.14-linux64-static.tar.gz                
+
+Needed dependencies: none
+
+Installation options:
+1. Install all GitHub versions (to /home/ahmed/ghpm/.local/bin)
+2. Install all APT versions
+3. Cancel
+Select installation method [1-3]:
+
+# Display installed applications 
+$ ghpm --list
+
+Packages managed by this script:
+
+Package         Version      Location
+-------------------------------------------------------
+eza             v0.20.16     /home/ahmed/ghpm/.local/bin/eza
+micro           v2.0.14      /home/ahmed/ghpm/.local/bin/micro
+lazygit         v0.45.0      /home/ahmed/ghpm/.local/bin/lazygit
+
 ```
 
 ## Dependencies
