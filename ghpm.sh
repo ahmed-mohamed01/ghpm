@@ -994,21 +994,25 @@ batch_install() {
 
 remove_package() {
     local binary_name="$1"
-    local quiet_mode="${2:-false}"
+    local silent_mode="${2:-false}"
+    local tmp_dir="${DATA_DIR}/tmp"
+    local backup_dir="${tmp_dir}/backup_$(date +%s)"
+    local db_backup="${backup_dir}/db_backup.json"
     # First check if package was installed by ghpm
     if ! package_info=$(db_ops get "$binary_name"); then
-        [[ "$quiet_mode" == "false" ]] && echo "Error: Package $binary_name is not managed by this script"
+        log quiet "ERROR" "$binary_name cannot be removed as it is not managed by the script"
+        [[ "$silent_mode" == "false" ]] && echo "Error: Package $binary_name is not managed by this script"
+        return 1
     fi
     local repo_name=$(echo "$package_info" | jq -r '.repo')
     local version=$(echo "$package_info" | jq -r '.version')
-
     local files_to_remove=($(echo "$package_info" | jq -r '.installed_files[].location'))
     if [[ ${#files_to_remove[@]} -eq 0 ]]; then
         log "ERROR" "No installed files found for $binary_name"
         return 1
     fi
-    # Display removal information
-    if [[ "$quiet_mode" == "false" ]]; then
+
+    if [[ "$silent_mode" == "false" ]]; then
         echo -e "\nRemoving package: $binary_name"
         echo "Repository: $repo_name"
         echo "Installed version: $version"
@@ -1018,49 +1022,58 @@ remove_package() {
         read -p $'\nProceed with removal? [y/N]: ' -r
         [[ ! "$REPLY" =~ ^[Yy]$ ]] && echo "Removal cancelled." && return 1
     fi
-    # Remove all files, with special handling for binary
-    local remove_success=true
-    local error_count=0
-    local i=0
+
+    # Backup db
+    mkdir -p "$backup_dir" || { log "ERROR" "Failed to create backup directory: $backup_dir"; return 1; }
+    cp "$DB_FILE" "$db_backup" || { log "ERROR" "Failed to create database backup"; rm -rf "$backup_dir"; return 1; }
+
+    # Move files to backup location instead of deleting
+    local move_failed=false
     for file in "${files_to_remove[@]}"; do
-        if [[ $i -eq 0 ]]; then
-            #progress "Removing binary"
-            rm -f "$file" 2>/dev/null
-            progress "Removing binary" $?
-            if [[ $? -ne 0 ]]; then
-                log "ERROR" "Failed to remove binary: $file"
-                return 1
+        if [[ -f "$file" ]]; then
+            local backup_path="${backup_dir}/${file##*/}"
+            if ! mv "$file" "$backup_path" 2>/dev/null; then
+                log "ERROR" "Failed to Remove file: $file"
+                move_failed=true
+                break
             fi
+            [[ "$silent_mode" == "false" ]] && echo "Removed: $file"
         else
-            echo "Removing $file"
-            if [[ -f "$file" ]]; then
-                if ! rm -f "$file" 2>/dev/null; then
-                    log "ERROR" "Failed to remove: $file"
-                    remove_success=false
-                    ((error_count++))
-                fi
-            else
-                log "WARNING" "File not found: $file"
-            fi
+            log "WARNING" "File not found: $file"
         fi
-        ((i++))
     done
 
-    # Remove from database
-    if ! db_ops remove "$binary_name"; then
-        echo "Failed to update database"
-        remove_success=false
-    fi
-    progress "Removing database entry" $?
-    
-    if $remove_success; then
-        echo -e "\nPackage $binary_name removed successfully"
-        return 0
-    else
-        echo -e "\nPackage $binary_name removed with errors. Please check $log_file"
+    # If any moves failed, restore from backup and exit
+    if [[ "$move_failed" == "true" ]]; then
+        log "ERROR" "Failed to remove all files, restoring from backup"
+        for file in "$backup_dir"/*; do
+            [[ -f "$file" ]] && mv "$file" "${files_to_remove[0]%/*}/"
+        done
+        rm -rf "$backup_dir"
         return 1
     fi
 
+    # Update database
+    if ! db_ops remove "$binary_name"; then
+        log "ERROR" "Failed to update database, restoring from backup"
+        # Restore database
+        cp "$db_backup" "$DB_FILE"
+        # Restore moved files
+        for file in "$backup_dir"/*; do
+            [[ -f "$file" ]] && mv "$file" "${files_to_remove[0]%/*}/"
+        done
+        rm -rf "$backup_dir"
+        return 1
+    fi
+
+    if [[ "$silent_mode" == "false" ]]; then
+        echo -e "\nPackage $binary_name removed successfully"
+    fi
+    log "INFO" "Successfully removed package: $binary_name"
+
+    # Clean up backup directory and files
+    rm -rf "$backup_dir"
+    return 0
 }
 
 main() {
