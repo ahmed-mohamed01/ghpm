@@ -907,11 +907,12 @@ batch_install() {
     echo "------------------------------------------------------------------------------------------------"
 
     # Initialize package arrays
-    local repo_list=() binary_names=() gh_versions=() apt_versions=() assets=()
-    
+    local repo_list=() binary_names=() gh_versions=() apt_versions=() assets=() total_repos=()
+    local skipped_repos=() skipped_reasons=()
+    local valid_packages=0
     while IFS= read -r line; do
         [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
-        
+        ((total_repos++))
         local repo_name binary_name
         if [[ "$line" == *"|"* ]]; then
             IFS='|' read -r repo_name binary_name <<< "$line"
@@ -923,16 +924,15 @@ batch_install() {
         fi
         get_cache_paths "$repo_name"
 
-        # Query github api for the repo
+        # Query github api for the repo, and process it
         local gh_response=$(query_github_api "$repo_name") || continue
-
-        # Process the API response once here
-        local processed_data
-        processed_data=$(process_asset_data "$gh_response") || continue
+        local processed_data=$(process_asset_data "$gh_response") || continue
         
         # Extract info in one jq call
-        local gh_version best_asset
-        read -r gh_version best_asset < <(echo "$processed_data" | jq -r '[.version, .chosen_asset.name] | @tsv')
+        local gh_version chosen_asset has_source
+        gh_version=$(echo "$processed_data" | jq -r '.version')
+        chosen_asset=$(echo "$processed_data" | jq -r '.chosen_asset.name')
+        has_source=$(echo "$processed_data" | jq -r '.has_source_files')
         
         # Find apt version
         local apt_version="not found"
@@ -940,19 +940,32 @@ batch_install() {
             apt_version=$(apt-cache policy "$binary_name" 2>/dev/null | grep 'Candidate:' | sed -E 's/.*Candidate: //; s/-[^-]*ubuntu[^-]*//; s/-$//; s/[^0-9.].*//; s/^/v/')
             [[ -z "$apt_version" || "$apt_version" == "none" ]] && apt_version="not found"
         fi
+        
+        if [[ "$chosen_asset" == "null" || -z "$chosen_asset" ]]; then
+            skipped_repos+=("$repo_name")
+            [[ "$has_source" == "true" ]] && skipped_reasons+=("source only") || skipped_reasons+=("no viable assets")
+            continue
+        fi
 
         # Store repo info
+        ((valid_packages++))
         binary_names+=("$binary_name")
         repo_list+=("$repo_name")
         gh_versions+=("$gh_version")
         apt_versions+=("$apt_version")
-        assets+=("$best_asset")
+        assets+=("$chosen_asset")
 
-        printf "%-15s %-12s %-12s %-50s\n" "$binary_name" "$gh_version" "$apt_version" "$best_asset"
+        printf "%-15s %-12s %-12s %-50s\n" "$binary_name" "$gh_version" "$apt_version" "$chosen_asset"
     done < "$repos_file"
 
     [[ ${#repo_list[@]} -eq 0 ]] && log "ERROR" "No valid repositories found in $repos_file" && return 1
 
+    if [[ ${#skipped_repos[@]} -gt 0 ]]; then
+        echo -e "\nSkipped repositories:"
+        for i in "${!skipped_repos[@]}"; do
+            echo "  - ${skipped_repos[$i]} (${skipped_reasons[$i]})"
+        done
+    fi
     echo -e "\nInstallation options:"
     echo "1. Install all GitHub versions (to $INSTALL_DIR)"
     echo "2. Install all APT versions"
@@ -976,8 +989,7 @@ batch_install() {
             done
             
             echo
-            echo "Installation complete: $success_count/${#repo_list[@]} packages installed successfully"
-            ;;
+            echo "Installation complete: $success_count/$total_repos repository packages installed successfully"  ;;
         2)
             apt_install binary_names[@]
             ;;
