@@ -173,8 +173,8 @@ has a --list option, which will check database to see if this is something manag
 
 has a --update option which will one option, a package name
  - check db to see if its is managed by gpi. if managed by gpi, it will check current installed version (from db) and call the github releases function to fetch proper release for this. It will call the same functions that checks binaries and ensure same procedure is followed (ensure correct architecture, install man pages, install shell-completions, check dependencies). Then it will display:
-
-        Checking for update ...
+  - $ ghpm update zoxide
+        Checking for update for zoxide...
                         
         Package      Current    Latest    Release asset     
         --------------------------------------------------------------------------------
@@ -183,6 +183,47 @@ has a --update option which will one option, a package name
         Additional dependencies: No
 
         Update found! 0.9.6 --> 0.9.7  Proceed? [y/N]
+
+  - $ ghpm upate
+
+        Checking for updates...
+                        
+        Package      Current    Latest    Release asset     
+        --------------------------------------------------------------------------------
+        zoxide       0.9.6      0.9.7     zoxide-0.9.7-amd64-linux-musl.tar.gz
+        bat          1.1.0      3.2.0     bat-3.2.0-amd64-linux-musl.tar.gz  
+
+        Update found! 
+                zoxide 0.9.6 --> 0.9.7  
+                bat 1.1.0 --> 3.2.0 
+        
+        Additional dependencies: No
+
+        Proceed? [y/N]
+
+   - If no updates:
+
+    $ ghpm update zoxide
+
+    Checking for update for zoxide...
+                        
+        Package      Current    Latest    Release asset     
+        --------------------------------------------------------------------------------
+        zoxide       0.9.6      0.9.6     zoxide-0.9.6-amd64-linux-musl.tar.gz
+
+    zoxide is up to date (v 0.9.6).
+
+    $ ghpm update
+
+     Checking for updates...
+                        
+        Package      Current    Latest    Release asset     
+        --------------------------------------------------------------------------------
+        zoxide       0.9.6      0.9.7     zoxide-0.9.7-amd64-linux-musl.tar.gz
+        bat          1.1.0      3.2.0     bat-3.2.0-amd64-linux-musl.tar.gz  
+
+        No updates available. 
+
 
  If proceed, it will overwrite the installed versoin with current verison, ensureing the db is updated. 
 
