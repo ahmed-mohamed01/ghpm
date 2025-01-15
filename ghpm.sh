@@ -1088,6 +1088,127 @@ remove_package() {
     return 0
 }
 
+update_package() {
+    local package_name="${1:-all}"
+    local -a packages_to_update=()
+    local -A package_info_map=()
+    
+    echo -n "Checking for updates ..."
+    
+    if [[ "$package_name" == "all" || "$package_name" == "" ]]; then
+        local all_packages=$(jq -r 'keys[]' "$DB_FILE")
+        if [[ -z "$all_packages" ]]; then
+            echo " No packages installed via GHPM."
+            return 0
+        fi
+        readarray -t packages_to_update <<< "$all_packages"
+    else
+        if ! package_info=$(db_ops get "$package_name"); then
+                echo " Failed!"
+                echo "Error: Package $package_name is not managed by this script."
+                return 1
+        fi
+        packages_to_update=("$package_name")
+    fi
+ 
+    echo " Done!"
+    
+    echo
+    printf "        %-12s %-10s %-10s %-50s\n" "Package" "Current" "Latest" "Release asset"
+    echo "        --------------------------------------------------------------------------------"
+    
+    local updates_available=false
+    declare -A update_info
+    
+    for pkg in "${packages_to_update[@]}"; do
+        local pkg_info current_version latest_version asset_name repo_name
+        
+        # Get installed package info
+        pkg_info=$(db_ops get "$pkg")
+        current_version=$(echo "$pkg_info" | jq -r '.version')
+        repo_name=$(echo "$pkg_info" | jq -r '.repo')
+        
+        # Get latest version from GitHub
+        local github_response processed_data
+        github_response=$(query_github_api "$repo_name")
+        processed_data=$(process_asset_data "$github_response")
+        
+        latest_version=$(echo "$processed_data" | jq -r '.version')
+        asset_name=$(echo "$processed_data" | jq -r '.chosen_asset.name')
+        
+        # Compare versions (strip v prefix for proper comparison)
+        local curr_ver="${current_version#v}"
+        local latest_ver="${latest_version#v}"
+        printf "        %-12s %-10s %-10s %-50s\n" "$pkg" "$current_version" "$latest_version" "$asset_name"
+        
+        if [[ "$(echo -e "$curr_ver\n$latest_ver" | sort -V | tail -n1)" != "$curr_ver" ]]; then
+            updates_available=true
+            update_info["$pkg"]="$repo_name|$current_version|$latest_version|$asset_name"
+        fi
+    done
+    echo
+    if ! $updates_available; then
+        if [[ ${#packages_to_update[@]} -eq 1 ]]; then
+            echo "        ${packages_to_update[0]} is up to date!"
+        else
+            echo "        All packages are up to date!"
+        fi
+        return 0
+    fi
+    
+    if [[ ${#packages_to_update[@]} -eq 1 ]]; then
+        echo
+        echo "Update found:"
+        for pkg in "${!update_info[@]}"; do
+            IFS='|' read -r repo_name current_version new_version asset_name <<< "${update_info[$pkg]}"
+            echo "        $pkg $current_version --> $new_version"
+        done
+        echo
+        echo -n "Proceed? [y/N] "
+        read -r REPLY
+    else
+        echo
+        echo "Updates found:"
+        for pkg in "${!update_info[@]}"; do
+            IFS='|' read -r repo_name current_version new_version asset_name <<< "${update_info[$pkg]}"
+            echo "        $pkg $current_version --> $new_version"
+        done
+        echo
+        echo -n "Proceed with all updates? [y/N] "
+        read -r REPLY
+    fi
+    
+    if [[ ! "$REPLY" =~ ^[Yy]$ ]]; then
+        echo "Update cancelled."
+        return 0
+    fi
+    
+    # Perform updates
+    local success_count=0
+    for pkg in "${!update_info[@]}"; do
+        IFS='|' read -r repo_name current_version new_version asset_name <<< "${update_info[$pkg]}"
+        
+        echo -n " Updating $pkg to $new_version..."
+        echo -n " Removing old version..."
+        if ! remove_package "$pkg" --silent; then
+            echo " Failed!"
+            log "ERROR" "Failed to remove old version of $pkg"
+            continue
+        fi
+        
+        echo -n " Installing $pkg $new_version to $INSTALL_DIR..."
+        if ! standalone_install "$repo_name" --silent; then
+            echo " Failed!"
+            log "ERROR" "Failed to install new version of $pkg"
+            continue
+        fi
+        echo " Success!"
+        
+        ((success_count++))
+    done
+    return 0
+}
+
 main() {
     local cmd="$1"
     shift
@@ -1108,6 +1229,10 @@ main() {
                 return 1
             fi
             remove_package "$binary_name" ;;
+        
+        "update")
+            local package_name="$1"
+            update_package "$package_name" ;;
         
         "--clear-cache")
             rm -rf $CACHE_DIR 
@@ -1131,6 +1256,8 @@ main() {
             echo "Commands:"
             echo "  install <owner/repo>    Install a package from GitHub"
             echo "  remove <package>        Uninstalls a package."
+            echo "  update                  Checks and updates all installed packages"
+            echo "  update <package>        Checks and updates <package>
             echo "  --file <file.txt>       Accepts a list of repositories from a file."
             echo "  --list                  List installed packages"
             echo "  --clear-cache           Clear the cache"
