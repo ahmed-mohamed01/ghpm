@@ -827,30 +827,40 @@ check_package() {
     local package_name="$1"
     local result="{"
 
-    # Check if command exists and get its path
-    if system_path=$(command -v "$package_name" 2>/dev/null); then
-        result+="\"installed\":true,\"path\":\"$system_path\","
-        
-        # Check if managed by our script
-        if managed_info=$(db_ops get "$package_name" 2>/dev/null); then
-            local installed_path=$(echo "$managed_info" | jq -r '.installed_files[] | select(.type=="binary") | .location')
-            
-            # Verify the system path matches our installed path
-            if [[ "$system_path" == "$installed_path" ]]; then
-                local installed_ver=$(echo "$managed_info" | jq -r '.version')
-                local repo=$(echo "$managed_info" | jq -r '.repo')
-                result+="\"managed_by\":\"script\",\"repo\":\"$repo\",\"version\":\"$installed_ver\""
-            else
-                result+="\"managed_by\":\"external\",\"version\":\"$("$system_path" --version 2>/dev/null | head -n1)\""
-            fi
-        else
-            result+="\"managed_by\":\"external\",\"version\":\"$("$system_path" --version 2>/dev/null | head -n1)\""
-        fi
-    else
-        result+="\"installed\":false"
+    if ! system_path=$(command -v "$package_name" 2>/dev/null); then
+        echo "${result}\"installed\":false}"
+        return 0
     fi
 
-    echo "${result}}"
+    result+="\"installed\":true,\"path\":\"$system_path\","
+
+    if ! managed_info=$(db_ops get "$package_name" 2>/dev/null) || \
+       [[ "$system_path" != "$(echo "$managed_info" | jq -r '.installed_files[] | select(.type=="binary") | .location')" ]]; then
+        # Handle multi-line version output
+        local raw_version=$("$system_path" --version 2>/dev/null)
+        # Look for version pattern in each line
+        if [[ "$raw_version" =~ v?([0-9]+\.[0-9]+\.[0-9]+) ]]; then
+            version="v${BASH_REMATCH[1]}"
+        else
+            version="version unknown"
+        fi
+        result+="\"managed_by\":\"external\",\"version\":\"$version\"}"
+        echo "$result"
+        return 0
+    fi
+
+    local installed_ver=$(echo "$managed_info" | jq -r '.version')
+    local repo=$(echo "$managed_info" | jq -r '.repo')
+    result+="\"managed_by\":\"script\",\"repo\":\"$repo\",\"version\":\"$installed_ver\""
+
+    if github_data=$(query_github_api "$repo" 2>/dev/null); then
+        latest_ver=$(echo "$github_data" | jq -r '.tag_name')
+        curr_ver="${installed_ver#v}" new_ver="${latest_ver#v}"
+        result+=",\"latest_version\":\"$latest_ver\",\"update_available\":\
+$(if [[ "$(echo -e "$curr_ver\n$new_ver" | sort -V | tail -n1)" != "$curr_ver" ]]; then echo true; else echo false; fi)"
+    fi
+
+    echo "$result}"
 }
 
 standalone_install() {
@@ -884,8 +894,7 @@ standalone_install() {
                 return 1
             else
                 if [[ "$silent" == "false" ]]; then
-                    echo "Package $binary_name is already installed but not managed by this script"
-                    echo "Current version: $current_ver"
+                    echo "Package $binary_name is already installed ($current_ver) but not managed by this script"
                     echo "Please uninstall the current version and retry the installer"
                 fi
                 return 1
@@ -975,7 +984,7 @@ batch_install() {
     # Initialize package arrays
     local repo_list=() binary_names=() gh_versions=() apt_versions=() assets=() total_repos=()
     local skipped_repos=() skipped_reasons=()
-    local valid_packages=0
+    local valid_packages=0 needs_update=false
     while IFS= read -r line; do
         [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
         ((total_repos++))
@@ -1158,7 +1167,7 @@ update_package() {
     local package_name="${1:-all}"
     local -a packages_to_update=()
     
-    echo -n "Checking for updates ..."
+    
     
     if [[ "$package_name" == "all" || "$package_name" == "" ]]; then
         if ! all_packages=$(jq -r 'keys[]' "$DB_FILE"); then
@@ -1168,19 +1177,21 @@ update_package() {
         readarray -t packages_to_update <<< "$all_packages"
     else
         if ! check_result=$(check_package "$package_name"); then
-            echo " Failed!"
             echo "Error checking package status."
             return 1
         fi
+        if [[ $(echo "$check_result" | jq -r '.installed') == "false" ]]; then
+            echo "Package $package_name is not installed. You can install it with $0 install <reponame> if it is has releases on github."
+            return 1
+        fi
         
-        if [[ $(echo "$check_result" | jq -r '.managed_by') != "script" ]]; then
-            echo " Failed!"
-            echo "Error: Package $package_name is not managed by this script."
+        if [[ $(echo "$check_result" | jq -r '.managed_by') == "external" ]]; then
+            echo "Package $package_name is installed but not managed by this script."
             return 1
         fi
         packages_to_update=("$package_name")
     fi
-    
+    echo -n "Checking for updates ..."
     echo
     printf "        %-12s %-10s %-10s %-50s\n" "Package" "Current" "Latest" "Release asset"
     echo "        --------------------------------------------------------------------------------"
