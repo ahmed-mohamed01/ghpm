@@ -823,6 +823,36 @@ setup_paths() {
     return 0
 }
 
+check_package() {
+    local package_name="$1"
+    local result="{"
+
+    # Check if command exists and get its path
+    if system_path=$(command -v "$package_name" 2>/dev/null); then
+        result+="\"installed\":true,\"path\":\"$system_path\","
+        
+        # Check if managed by our script
+        if managed_info=$(db_ops get "$package_name" 2>/dev/null); then
+            local installed_path=$(echo "$managed_info" | jq -r '.installed_files[] | select(.type=="binary") | .location')
+            
+            # Verify the system path matches our installed path
+            if [[ "$system_path" == "$installed_path" ]]; then
+                local installed_ver=$(echo "$managed_info" | jq -r '.version')
+                local repo=$(echo "$managed_info" | jq -r '.repo')
+                result+="\"managed_by\":\"script\",\"repo\":\"$repo\",\"version\":\"$installed_ver\""
+            else
+                result+="\"managed_by\":\"external\",\"version\":\"$("$system_path" --version 2>/dev/null | head -n1)\""
+            fi
+        else
+            result+="\"managed_by\":\"external\",\"version\":\"$("$system_path" --version 2>/dev/null | head -n1)\""
+        fi
+    else
+        result+="\"installed\":false"
+    fi
+
+    echo "${result}}"
+}
+
 standalone_install() {
     local repo_name="$1"
     local silent=${2:-false}
@@ -1091,27 +1121,29 @@ remove_package() {
 update_package() {
     local package_name="${1:-all}"
     local -a packages_to_update=()
-    local -A package_info_map=()
     
     echo -n "Checking for updates ..."
     
     if [[ "$package_name" == "all" || "$package_name" == "" ]]; then
-        local all_packages=$(jq -r 'keys[]' "$DB_FILE")
-        if [[ -z "$all_packages" ]]; then
+        if ! all_packages=$(jq -r 'keys[]' "$DB_FILE"); then
             echo " No packages installed via GHPM."
             return 0
         fi
         readarray -t packages_to_update <<< "$all_packages"
     else
-        if ! package_info=$(db_ops get "$package_name"); then
-                echo " Failed!"
-                echo "Error: Package $package_name is not managed by this script."
-                return 1
+        if ! check_result=$(check_package "$package_name"); then
+            echo " Failed!"
+            echo "Error checking package status."
+            return 1
+        fi
+        
+        if [[ $(echo "$check_result" | jq -r '.managed_by') != "script" ]]; then
+            echo " Failed!"
+            echo "Error: Package $package_name is not managed by this script."
+            return 1
         fi
         packages_to_update=("$package_name")
     fi
- 
-    echo " Done!"
     
     echo
     printf "        %-12s %-10s %-10s %-50s\n" "Package" "Current" "Latest" "Release asset"
@@ -1257,7 +1289,7 @@ main() {
             echo "  install <owner/repo>    Install a package from GitHub"
             echo "  remove <package>        Uninstalls a package."
             echo "  update                  Checks and updates all installed packages"
-            echo "  update <package>        Checks and updates <package>
+            echo "  update <package>        Checks and updates <package>"
             echo "  --file <file.txt>       Accepts a list of repositories from a file."
             echo "  --list                  List installed packages"
             echo "  --clear-cache           Clear the cache"
