@@ -856,6 +856,42 @@ check_package() {
 standalone_install() {
     local repo_name="$1"
     local silent=${2:-false}
+
+    local binary_name
+    if [[ "$repo_name" == *"|"* ]]; then
+        binary_name=$(echo "$repo_name" | cut -d'|' -f2 | tr -d ' ')
+    else
+        binary_name=$(basename "$repo_name")
+    fi
+
+     # Check existing installation
+    local status
+    if status=$(check_package "$binary_name"); then
+        if [[ $(echo "$status" | jq -r '.installed') == "true" ]]; then
+            local current_ver=$(echo "$status" | jq -r '.version')
+            
+            if [[ $(echo "$status" | jq -r '.managed_by') == "script" ]]; then
+                if [[ "$silent" == "false" ]]; then
+                    if [[ $(echo "$status" | jq -r '.update_available') == "true" ]]; then
+                        local latest_ver=$(echo "$status" | jq -r '.latest_version')
+                        echo "Package $binary_name is installed but an update is available"
+                        echo "Current: $current_ver --> Latest: $latest_ver"
+                        echo "Use 'ghpm update $binary_name' to update"
+                    else
+                        echo "Package $binary_name is already installed and up to date (version $current_ver)"
+                    fi
+                fi
+                return 1
+            else
+                if [[ "$silent" == "false" ]]; then
+                    echo "Package $binary_name is already installed but not managed by this script"
+                    echo "Current version: $current_ver"
+                    echo "Please uninstall the current version and retry the installer"
+                fi
+                return 1
+            fi
+        fi
+    fi
     
     # Process repo release data
     local api_response=$(query_github_api "$repo_name") || return 1
