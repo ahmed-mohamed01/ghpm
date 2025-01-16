@@ -196,8 +196,6 @@ has a --update option which will one option, a package name
         Update found! 
                 zoxide 0.9.6 --> 0.9.7  
                 bat 1.1.0 --> 3.2.0 
-        
-        Additional dependencies: No
 
         Proceed? [y/N]
 
@@ -312,6 +310,14 @@ prep_install_files()
                 )
 
 process_installation()
+
+
         - copies files to needed locations. 
         - should be able to mv ${found_files[binary]} ${install_map[binary]} to copy files. 
         - after installation, it will populate the db with the files installed = install_map[@]    # needs the final location of installed files so it can be removed later
+
+
+## TODO
+[] Current implementatoin does not differentiate ajeetdsouza/zoxide  from Haizzz/zoxide when attempting to install.
+   - need to improve check_package()
+[] 
