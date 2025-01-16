@@ -146,26 +146,9 @@ validate_input() {
 # This will ensure input is valid, check cache to see if it exists, otherwise fetch and cache api_response.
 # Output is full output from github api
 query_github_api() {
-    local input="$1"
+    local repo_name="$1"
     local ttl=36000    # Cache ttl/valid period, set at 600min
     local current_time=$(date +%s)
-
-    # Parse and validate input
-    local repo_name
-    local binary_name
-    if [[ "$input" =~ ^[a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+$ ]] || [[ "$input" =~ ^[a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+\s*\|\s*[a-zA-Z0-9_-]+$ ]]; then
-        if [[ "$input" == *"|"* ]]; then
-            repo_name=$(echo "$input" | cut -d'|' -f1 | tr -d ' ')
-            binary_name=$(echo "$input" | cut -d'|' -f2 | tr -d ' ')
-        else
-            repo_name="$input"
-            binary_name=${repo_name##*/}
-        fi
-    else
-        echo "Invalid format. Use 'owner/repo'"
-        log quiet "ERROR" "Invalid entry $input"
-        return 1
-    fi
 
     # Create cache dir
     mkdir -p "$CACHE_DIR"
@@ -238,7 +221,7 @@ query_github_api() {
             ;;
         401) log "ERROR" "Authentication failed for $repo_name. Check GITHUB_TOKEN."; return 1 ;;
         403) log "ERROR" "Rate limit exceeded or access forbidden for $repo_name."; return 1 ;;
-        404) log "ERROR" "Repository $repo_name not found."; return 1 ;;
+        404) log "ERROR" "Repository $repo_name not found."; return 2 ;;
         *) log "ERROR" "GitHub API request failed with status $http_code."; return 1 ;;
     esac
     
