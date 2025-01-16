@@ -107,7 +107,42 @@ progress() {
         return $exit_status
     fi
 }
+validate_input() {
+    local input="$1"
+    local repo_name=""
+    local binary_name=""
+    
+    # Check if input is empty
+    if [[ -z "$input" ]]; then
+        echo "Error: Empty input. Use format 'owner/repo' or 'owner/repo | binary-name'" >&2
+        return 1
+    fi
 
+    # Check and split on pipe if present
+    if [[ "$input" == *"|"* ]]; then
+        repo_name=$(echo "$input" | cut -d'|' -f1 | tr -d ' ')
+        binary_name=$(echo "$input" | cut -d'|' -f2 | tr -d ' ')
+        
+        # Validate binary name if provided
+        if [[ -z "$binary_name" || ! "$binary_name" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*[A-Za-z0-9]$ ]]; then
+            echo "Error: Invalid binary name format after '|'" >&2
+            return 1
+        fi
+    else
+        repo_name="$input"
+        binary_name=$(basename "$repo_name")
+    fi
+
+    # Validate repo format (owner/repo)
+    if [[ ! "$repo_name" =~ ^[A-Za-z0-9][A-Za-z0-9-]*[A-Za-z0-9]/[A-Za-z0-9][A-Za-z0-9._-]*[A-Za-z0-9]$ ]]; then
+        echo "Error: Invalid repository format. Use 'owner/repo'" >&2
+        return 1
+    fi
+    
+    # Output as simple string with delimiter
+    echo "${repo_name}:${binary_name}"
+    return 0
+}
 # This will ensure input is valid, check cache to see if it exists, otherwise fetch and cache api_response.
 # Output is full output from github api
 query_github_api() {
