@@ -143,14 +143,12 @@ validate_input() {
     echo "${repo_name}:${binary_name}"
     return 0
 }
-# This will ensure input is valid, check cache to see if it exists, otherwise fetch and cache api_response.
-# Output is full output from github api
+# this will accept a repo name, and fetch api input with a local cache validation. 
 query_github_api() {
     local repo_name="$1"
     local ttl=36000    # Cache ttl/valid period, set at 600min
     local current_time=$(date +%s)
 
-    # Create cache dir
     mkdir -p "$CACHE_DIR"
 
     # Validate cache
@@ -185,8 +183,7 @@ query_github_api() {
     local auth_header=""
     [[ -n "${GITHUB_TOKEN:-}" ]] && auth_header="Authorization: token $GITHUB_TOKEN"
 
-    local http_code
-    local api_response
+    local http_code api_response
     if [[ -n "$auth_header" ]]; then
         http_code=$(curl -sI -H "$auth_header" -H "Accept: application/vnd.github.v3+json" "$api_url" | head -n1 | cut -d' ' -f2)
         [[ "$http_code" == "200" ]] && api_response=$(curl -sS -H "$auth_header" -H "Accept: application/vnd.github.v3+json" "$api_url")
@@ -224,7 +221,6 @@ query_github_api() {
         404) log "ERROR" "Repository $repo_name not found."; return 2 ;;
         *) log "ERROR" "GitHub API request failed with status $http_code."; return 1 ;;
     esac
-    
 }
 
 # TODO: Add caching. 
