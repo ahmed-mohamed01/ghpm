@@ -110,24 +110,23 @@ progress() {
 
 validate_input() {
     local input="$1"
-    local repo_name=""
-    local binary_name=""
-    echo "DEBUG: Input received: '$input'" >&2  # Debug line
+    
     # Check if input is empty
     if [[ -z "$input" ]]; then
         echo "Error: Missing repository name. Usage: ghpm install owner/repo" >&2
         return 1
     fi
 
+    local repo_name=""
+    local binary_name=""
+
     # Check and split on pipe if present
     if [[ "$input" == *"|"* ]]; then
         repo_name=$(echo "$input" | cut -d'|' -f1 | tr -d ' ')
         binary_name=$(echo "$input" | cut -d'|' -f2 | tr -d ' ')
         
-        # Validate binary name if provided
         if [[ -z "$binary_name" ]]; then
             echo "Error: Empty binary name after '|'" >&2
-            echo "Usage: ghpm install owner/repo | binary-name" >&2
             return 1
         fi
     else
@@ -142,11 +141,37 @@ validate_input() {
         echo "Tip: If you're looking for a package, try: ghpm search <name>" >&2
         return 1
     fi
+
+    # Check if repo is already installed
+    if managed_info=$(db_ops get "$repo_name" 2>/dev/null); then
+        # Package is managed by us
+        local current_version=$(echo "$managed_info" | jq -r '.version')
+        
+        # Check for updates from GitHub
+        if github_data=$(query_github_api "$repo_name" 2>/dev/null); then
+            local latest_version=$(echo "$github_data" | jq -r '.tag_name')
+            local curr_ver="${current_version#v}" new_ver="${latest_version#v}"
+            
+            if [[ "$(echo -e "$curr_ver\n$new_ver" | sort -V | tail -n1)" != "$curr_ver" ]]; then
+                echo "Package $binary_name is installed but an update is available" >&2
+                echo "Current: $current_version --> Latest: $latest_version" >&2
+                echo "Use 'ghpm update $binary_name' to update" >&2
+                return 2  # Special return code for "installed but update available"
+            else
+                echo "Package $binary_name is already installed and up to date (version $current_version)" >&2
+                return 2
+            fi
+        fi
+    else
+        # Check if installed but not managed by us
+        if system_path=$(command -v "$binary_name" 2>/dev/null); then
+            echo "Warning: $binary_name is already installed at $system_path but not managed by ghpm" >&2
+            echo "Remove the existing installation before proceeding" >&2
+            return 3  # Special return code for "installed externally"
+        fi
+    fi
     
-    # Strip any trailing/leading whitespace
-    repo_name=$(echo "$repo_name" | xargs)
-    binary_name=$(echo "$binary_name" | xargs)
-    
+    # If we get here, input is valid and package is not installed
     echo "${repo_name}:${binary_name}"
     return 0
 }
