@@ -1288,6 +1288,109 @@ update_package() {
     return 0
 }
 
+# search for repositories using /search/repositories api endpoint. 
+search_packages() {
+    local query="$1"
+    local page_size=15
+    local current_page=${2:-1}  # Default to page 1 if not specified
+    [[ -z "$query" ]] && { echo "Usage: ghpm search <query>"; return 1; }
+
+    # Store example repo name for later use
+    local example_repo=""
+
+    while true; do
+        # Get search results for current page
+        local encoded_query=$(echo "$query in:name,description language:rust,go,python,c,cpp fork:false" | sed 's/ /%20/g')
+        local api_url="https://api.github.com/search/repositories?q=${encoded_query}&sort=stars&order=desc&per_page=${page_size}&page=${current_page}"
+        
+        local auth_header=""
+        [[ -n "${GITHUB_TOKEN:-}" ]] && auth_header="Authorization: token $GITHUB_TOKEN"
+        
+        local items_response
+        if [[ -n "$auth_header" ]]; then
+            items_response=$(curl -sS -H "$auth_header" -H "Accept: application/vnd.github.v3+json" "$api_url")
+        else
+            items_response=$(curl -sS -H "Accept: application/vnd.github.v3+json" "$api_url")
+        fi
+
+        # Check for API errors
+        if [[ $(echo "$items_response" | jq -r '.message // empty') ]]; then
+            log "ERROR" "GitHub API error: $(echo "$items_response" | jq -r '.message')"
+            return 1
+        fi
+
+        # Calculate total pages
+        local total_count=$(echo "$items_response" | jq -r '.total_count')
+        [[ "$total_count" -eq 0 ]] && { echo "No matches found for '$query'"; return 0; }
+        local total_pages=$(( (total_count + page_size - 1) / page_size ))
+
+        # Display results
+        echo "Found $total_count repositories matching '$query'"
+        echo "Showing page $current_page of $total_pages (${page_size} results per page)"
+        echo
+        printf "%-30s %-8s %-8s %-8s %-40s\n" "Repository" "Stars" "Latest" "Assets" "Description"
+        printf "%$(tput cols)s\n" | tr ' ' '-'
+
+        echo "$items_response" | jq -r '.items[] | . as $repo | 
+            ($repo.full_name[:30]) as $name |
+            ($repo.description[:60] // "No description") as $desc |
+            ($repo.stargazers_count | tostring) as $stars |
+            $repo.full_name as $full_name |
+            [$name, $stars, "checking..", $desc, $full_name] | @tsv' | \
+        while IFS=$'\t' read -r name stars _ desc full_name; do
+            [[ -z "$example_repo" ]] && example_repo="$full_name"
+            
+            local latest_ver="N/A"
+            local asset_count="0"
+            if release_info=$(query_github_api "$name" 2>/dev/null); then
+                latest_ver=$(echo "$release_info" | jq -r '.tag_name // "N/A"')
+                # Format version string
+                if [[ "$latest_ver" != "N/A" ]]; then
+                    latest_ver="${latest_ver#v}"
+                    if [[ "$latest_ver" =~ [0-9] ]]; then
+                        latest_ver="${latest_ver:0:8}"
+                    else
+                        latest_ver="${latest_ver:0:5}..."
+                    fi
+                fi
+                asset_count=$(echo "$release_info" | jq -r '.assets | length')
+            fi
+            printf "%-30s %-8s %-8s %-8s %-40s\n" "$name" "$stars" "$latest_ver" "$asset_count" "$desc"
+        done
+
+        echo
+        echo "Navigation:"
+        [[ $current_page -gt 1 ]] && echo "  [p] Previous page"
+        [[ $current_page -lt $total_pages ]] && echo "  [n] Next page"
+        echo "  [q] Quit"
+        echo "  Current: Page $current_page of $total_pages"
+        echo
+        echo "To install any of these packages, use: ghpm install owner/repo"
+        [[ -n "$example_repo" ]] && echo "For example: ghpm install $example_repo"
+
+        # Get navigation input
+        echo -n "Enter navigation command (n/p/q): "
+        read -n 1 -r input
+        echo
+
+        case "$input" in
+            n|N)
+                if [[ $current_page -lt $total_pages ]]; then
+                    ((current_page++))
+                fi
+                ;;
+            p|P)
+                if [[ $current_page -gt 1 ]]; then
+                    ((current_page--))
+                fi
+                ;;
+            q|Q|*)
+                return 0
+                ;;
+        esac
+    done
+}
+
 main() {
     local cmd="$1"
     shift
@@ -1313,6 +1416,10 @@ main() {
             local package_name="$1"
             update_package "$package_name" ;;
         
+        "search")
+           local query="$1"
+           search_packages "$query" ;;
+        
         "--clear-cache")
             rm -rf $CACHE_DIR 
             echo "Purging cache.."
@@ -1331,12 +1438,16 @@ main() {
             echo "0.2.7" ;;
 
         *)
+            echo "GitHub Package Manager - a script to download and manage precompiled binaries from Github"
+            echo
             echo "Usage: $0 <command> [options]"
+            echo
             echo "Commands:"
             echo "  install <owner/repo>    Install a package from GitHub"
             echo "  remove <package>        Uninstalls a package."
             echo "  update                  Checks and updates all installed packages"
             echo "  update <package>        Checks and updates <package>"
+            echo "  search <package>        Searches GitHub for mathcing repository for the <package>"
             echo "  --file <file.txt>       Accepts a list of repositories from a file."
             echo "  --list                  List installed packages"
             echo "  --clear-cache           Clear the cache"
