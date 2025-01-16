@@ -107,14 +107,15 @@ progress() {
         return $exit_status
     fi
 }
+
 validate_input() {
     local input="$1"
     local repo_name=""
     local binary_name=""
-    
+    echo "DEBUG: Input received: '$input'" >&2  # Debug line
     # Check if input is empty
     if [[ -z "$input" ]]; then
-        echo "Error: Empty input. Use format 'owner/repo' or 'owner/repo | binary-name'" >&2
+        echo "Error: Missing repository name. Usage: ghpm install owner/repo" >&2
         return 1
     fi
 
@@ -124,8 +125,9 @@ validate_input() {
         binary_name=$(echo "$input" | cut -d'|' -f2 | tr -d ' ')
         
         # Validate binary name if provided
-        if [[ -z "$binary_name" || ! "$binary_name" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*[A-Za-z0-9]$ ]]; then
-            echo "Error: Invalid binary name format after '|'" >&2
+        if [[ -z "$binary_name" ]]; then
+            echo "Error: Empty binary name after '|'" >&2
+            echo "Usage: ghpm install owner/repo | binary-name" >&2
             return 1
         fi
     else
@@ -133,13 +135,18 @@ validate_input() {
         binary_name=$(basename "$repo_name")
     fi
 
-    # Validate repo format (owner/repo)
-    if [[ ! "$repo_name" =~ ^[A-Za-z0-9][A-Za-z0-9-]*[A-Za-z0-9]/[A-Za-z0-9][A-Za-z0-9._-]*[A-Za-z0-9]$ ]]; then
-        echo "Error: Invalid repository format. Use 'owner/repo'" >&2
+    # Basic owner/repo format check
+    if [[ ! "$repo_name" =~ ^[^/]+/[^/]+$ ]]; then
+        echo "Error: Invalid repository format '$repo_name'" >&2
+        echo "Usage: ghpm install owner/repo" >&2
+        echo "Tip: If you're looking for a package, try: ghpm search <name>" >&2
         return 1
     fi
     
-    # Output as simple string with delimiter
+    # Strip any trailing/leading whitespace
+    repo_name=$(echo "$repo_name" | xargs)
+    binary_name=$(echo "$binary_name" | xargs)
+    
     echo "${repo_name}:${binary_name}"
     return 0
 }
@@ -643,8 +650,6 @@ prep_install_files() {
 
 }
 
-## ---- for use in --file mode ----- ##### 
-
 detect_installed_shells() {
     # Initialize array with shell status
     declare -A SHELL_STATUS=(
@@ -881,12 +886,8 @@ standalone_install() {
     local repo_name="$1"
     local silent=${2:-false}
 
-    local binary_name
-    if [[ "$repo_name" == *"|"* ]]; then
-        binary_name=$(echo "$repo_name" | cut -d'|' -f2 | tr -d ' ')
-    else
-        binary_name=$(basename "$repo_name")
-    fi
+    local repo_name binary_name
+    IFS=':' read -r repo_name binary_name < <(validate_input "$repo_name") || return 1
 
      # Check existing installation
     local status
