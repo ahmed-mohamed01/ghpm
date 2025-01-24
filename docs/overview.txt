@@ -316,8 +316,35 @@ process_installation()
         - should be able to mv ${found_files[binary]} ${install_map[binary]} to copy files. 
         - after installation, it will populate the db with the files installed = install_map[@]    # needs the final location of installed files so it can be removed later
 
+- Validate input during install. 
+ - user enters something 
+ - for all installs this needs to be in owner/repo --else inform and Exiting
+ - checks if owner/repo is in db -- if not proceed to api call (currently it checks binary name, ( part after /)) this results in false matches. 
+   - if in db, checks latest update, and inform user packages is installed, up to date/has update.
+ - when api called, in query_github_api, if repo is not found it will exit with 2, if other errors it will exit with 1. 
+   - this exit code will be checked by the function calling it, and will inform user.
+   - in standaline install, this will respect silent flag
+ 
+- batch install should also validate abouve in each line: check in owner/repo | alias format, else skip the line. 
+   - batch install can utilize alias (= binary name) to check apt versions. otherwise its not really needed. 
+   - if repo correct format, check if installed, if installed and managed by script, checks update and informs usesr this can be updated. 
+   - if installed and managed externally, added to skipped repos list, reason: installed, managed externally. 
+   - if we get here, repo is valid and not installed, and api is called. will check for error 2 and skip, skip reason: repo not found. 
+   - if no errors, checks assets list - if no chosen asset, no viable assets but source exists, skip repo - no viable assets
+   - if no viable assets but has source files - still skip but reason is source only repo
+   - if valid input, chosen asset present - added to repos to install. 
 
+- update is called with S0 update <package name>
+   - check if package is in the install db
+   - if not in db, inform user. is not managed by script, and exit.
+   - if installed, uses associated repo to check updates. 
+
+
+
+
+- if 
 ## TODO
 [] Current implementatoin does not differentiate ajeetdsouza/zoxide  from Haizzz/zoxide when attempting to install.
    - need to improve check_package()
+[] need to include binary checking in install, batch install and update
 [] 
