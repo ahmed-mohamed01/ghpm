@@ -641,9 +641,9 @@ prep_install_files() {
     done
 
     # Define completion file patterns for each shell
-    local bash_pattern='*/bash-completion/*|*.bash'
-    local zsh_pattern='*/zsh-completion/*|*/_*'
-    local fish_pattern='completion.*\.fish$|completions/.*\.fish$|.*\.fish-completion$'
+    local bash_pattern='.*completion.*bash$|.*\.bash$|.*\.bash-completion$'
+    local zsh_pattern='.*completion.*zsh$|.*/_.*|.*\.zsh$'
+    local fish_pattern='.*completion.*fish$|.*\.fish$'
 
     # echo "installed shells:"
     # for shell in "${!SHELL_STATUS[@]}"; do
@@ -699,27 +699,15 @@ prep_install_files() {
 }
 
 detect_installed_shells() {
-    # Initialize array with shell status
-    declare -A SHELL_STATUS=(
-        [bash]=0
-        [zsh]=0
-        [fish]=0
-    )
-
-    # Check for shell executables and config files
-    if command -v bash >/dev/null 2>&1 && [[ -f "$HOME/.bashrc" ]]; then
-        SHELL_STATUS[bash]=1
-    fi
+    # Array of supported shells and their status
+    declare -A SHELL_STATUS=([bash]=0 [zsh]=0 [fish]=0)
     
-    if command -v zsh >/dev/null 2>&1 && [[ -f "$HOME/.zshrc" ]]; then
-        SHELL_STATUS[zsh]=1
-    fi
-    
-    if command -v fish >/dev/null 2>&1 && [[ -d "$HOME/.config/fish" ]]; then
-        SHELL_STATUS[fish]=1
-    fi
+    # Check each shell - both binary and config existence required
+    [[ $(command -v bash 2>/dev/null) && -f "$HOME/.bashrc" ]] && SHELL_STATUS[bash]=1 
+    [[ $(command -v zsh 2>/dev/null) && -f "$HOME/.zshrc" ]] && SHELL_STATUS[zsh]=1
+    [[ $(command -v fish 2>/dev/null) && -d "$HOME/.config/fish" ]] && SHELL_STATUS[fish]=1
 
-    # Return array by reference
+    # Return array by reference 
     declare -p SHELL_STATUS
 }
 
