@@ -1,7 +1,7 @@
 #! /usr/bin/env bash
 
 #set -euo pipefail      # set -e error handling, -u undefined variable protection -o pipefail piepline faulure catching. 
-DISPLAY_ISSUES=true # make log output visible. 
+DISPLAY_ISSUES=false # make log output visible. 
 
 # Configure folders
 DATA_DIR="${PWD}/.local/share/ghpm"
@@ -969,15 +969,18 @@ standalone_install() {
 }
 
 batch_install() {
-    local repos_file=$1
+    local repos_file="$1"
+    local silent="${2:-false}"
 
     [[ ! -f "$repos_file" ]] && log "ERROR" "Repositories file '$repos_file' not found." && return 1
 
-    echo "Processing repositories from $repos_file:"
-    echo
-    echo "Checking versions..."
-    printf "%-15s %-12s %-12s %-50s\n" "Binary" "Github" "APT" "Asset"
-    echo "------------------------------------------------------------------------------------------------"
+    if [[ "$silent" == "false" ]]; then
+        echo "Processing repositories from $repos_file:"
+        echo
+        echo "Checking versions..."
+        printf "%-15s %-12s %-12s %-50s\n" "Binary" "Github" "APT" "Asset"
+        echo "------------------------------------------------------------------------------------------------"
+    fi
 
     # Initialize package arrays
     local repo_list=() binary_names=() gh_versions=() apt_versions=() assets=() total_repos=()
@@ -1028,46 +1031,50 @@ batch_install() {
         apt_versions+=("$apt_version")
         assets+=("$chosen_asset")
 
-        printf "%-15s %-12s %-12s %-50s\n" "$binary_name" "$gh_version" "$apt_version" "$chosen_asset"
+        if [[ "$silent" == "false" ]]; then
+            printf "%-15s %-12s %-12s %-50s\n" "$binary_name" "$gh_version" "$apt_version" "$chosen_asset"
+        fi
     done < "$repos_file"
 
     [[ ${#repo_list[@]} -eq 0 ]] && log "ERROR" "No valid repositories found in $repos_file" && return 1
 
-    if [[ ${#skipped_repos[@]} -gt 0 ]]; then
+    if [[ "$silent" == "false" && ${#skipped_repos[@]} -gt 0 ]]; then
         echo -e "\nSkipped repositories:"
         for i in "${!skipped_repos[@]}"; do
             echo "  - ${skipped_repos[$i]} (${skipped_reasons[$i]})"
         done
     fi
-    echo -e "\nInstallation options:"
-    echo "1. Install all GitHub versions (to $INSTALL_DIR)"
-    echo "2. Install all APT versions"
-    echo "3. Cancel"
-    read -rp "Select installation method [1-3]: " choice
+
+    # In silent mode, automatically choose GitHub installation
+    choice=1
+    if [[ "$silent" == "false" ]]; then
+        echo -e "\nInstallation options:"
+        echo "1. Install all GitHub versions (to $INSTALL_DIR)"
+        echo "2. Install all APT versions"
+        echo "3. Cancel"
+        read -rp "Select installation method [1-3]: " choice
+    fi
 
     case $choice in
         1)
-            echo "Installing ${#repo_list[@]} packages from GitHub..."
-            echo
+            [[ "$silent" == "false" ]] && echo "Installing ${#repo_list[@]} packages from GitHub..."
+            [[ "$silent" == "false" ]] && echo
             local success_count=0
             for i in "${!repo_list[@]}"; do
-                progress "Installing ${binary_names[i]}"
                 if standalone_install "${repo_list[i]}" --silent; then
-                    progress "Installing ${binary_names[i]}" 0
                     ((success_count++))
                 else
-                    progress "Installing ${binary_names[i]}" 1
                     log quiet "ERROR" "Failed to install ${repo_list[i]}"
                 fi
             done
             
-            echo
-            echo "Installation complete: $success_count/$total_repos repository packages installed successfully"  ;;
+            [[ "$silent" == "false" ]] && echo
+            [[ "$silent" == "false" ]] && echo "Installation complete: $success_count/$total_repos repository packages installed successfully"  ;;
         2)
             apt_install binary_names[@]
             ;;
         3)
-            echo "Installation cancelled."
+            [[ "$silent" == "false" ]] && echo "Installation cancelled."
             return 0 
             ;;
         *)
@@ -1192,7 +1199,7 @@ update_package() {
     declare -A update_info
     
     for pkg in "${packages_to_update[@]}"; do
-        local pkg_info current_version latest_version asset_name repo_name
+        local pkg_info current_version latest_version asset_name
         
         # Get installed package info
         pkg_info=$(db_ops get "$pkg")
@@ -1384,6 +1391,14 @@ search_packages() {
 }
 
 main() {
+    local silent=false
+
+    # Check for unattended flag first
+    if [[ "$1" == "-u" ]]; then
+        silent=true
+        shift
+    fi
+
     local cmd="$1"
     shift
 
@@ -1421,7 +1436,7 @@ main() {
  
         "--file")
             local repos_file="$1"
-            batch_install "$repos_file" ;;
+            batch_install "$repos_file" "$silent" ;;
 
         "--list")
             db_ops list ;;
@@ -1432,7 +1447,10 @@ main() {
         *)
             echo "GitHub Package Manager - a script to download and manage precompiled binaries from Github"
             echo
-            echo "Usage: $0 <command> [options]"
+            echo "Usage: $0 [-u] <command> [options]"
+            echo
+            echo "Options:"
+            echo "  -u                      Run in unattended mode (no prompts)"
             echo
             echo "Commands:"
             echo "  install <owner/repo>    Install a package from GitHub"
