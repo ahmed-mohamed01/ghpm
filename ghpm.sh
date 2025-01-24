@@ -189,13 +189,11 @@ validate_input() {
             fi
             
             local latest_version=$(echo "$github_data" | jq -r '.tag_name')
-            echo "${repo_name}:${input}:${current_version}:${latest_version}"
-            ;;
+            echo "${repo_name}:${input}:${current_version}:${latest_version}" ;;
             
         *)
             echo "Error: Invalid validation type" >&2
-            return 1
-            ;;
+            return 1 ;;
     esac
     
     return 0
@@ -1174,19 +1172,18 @@ update_package() {
         fi
         readarray -t packages_to_update <<< "$all_packages"
     else
-        local check_result=$(validate_input binary "$package_name")
-        if [[ $(echo "$check_result" | jq -r '.installed') == "false" ]]; then
-            echo "Package $package_name is not installed. You can install it with $0 install <reponame> if it is has releases on github."
-            return 1
-        fi
-        
-        if [[ $(echo "$check_result" | jq -r '.managed_by') == "external" ]]; then
-            echo "Package $package_name is installed but not managed by this script."
+        # Check if package exists and is managed by ghpm
+        if ! package_info=$(db_ops get "$package_name"); then
+            echo "Error: $package_name is not installed"
             return 1
         fi
         packages_to_update=("$package_name")
     fi
-    echo -n "Checking for updates ..."
+
+    # Only continue if we have packages to update
+    [[ ${#packages_to_update[@]} -eq 0 ]] && return 0
+
+    echo "Checking for updates ..."
     echo
     printf "        %-12s %-10s %-10s %-50s\n" "Package" "Current" "Latest" "Release asset"
     echo "        --------------------------------------------------------------------------------"
