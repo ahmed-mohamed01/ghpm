@@ -109,70 +109,95 @@ progress() {
 }
 
 validate_input() {
-    local input="$1"
+    local type="$1"    # 'repo' or 'binary'
+    local input="$2"
     
-    # Check if input is empty
-    if [[ -z "$input" ]]; then
-        echo "Error: Missing repository name. Usage: ghpm install owner/repo" >&2
-        return 1
-    fi
-
-    local repo_name=""
-    local binary_name=""
-
-    # Check and split on pipe if present
-    if [[ "$input" == *"|"* ]]; then
-        repo_name=$(echo "$input" | cut -d'|' -f1 | tr -d ' ')
-        binary_name=$(echo "$input" | cut -d'|' -f2 | tr -d ' ')
-        
-        if [[ -z "$binary_name" ]]; then
-            echo "Error: Empty binary name after '|'" >&2
-            return 1
-        fi
-    else
-        repo_name="$input"
-        binary_name=$(basename "$repo_name")
-    fi
-
-    # Basic owner/repo format check
-    if [[ ! "$repo_name" =~ ^[^/]+/[^/]+$ ]]; then
-        echo "Error: Invalid repository format '$repo_name'" >&2
-        echo "Usage: ghpm install owner/repo" >&2
-        echo "Tip: If you're looking for a package, try: ghpm search <name>" >&2
-        return 1
-    fi
-
-    # Check if repo is already installed
-    if managed_info=$(db_ops get "$repo_name" 2>/dev/null); then
-        # Package is managed by us
-        local current_version=$(echo "$managed_info" | jq -r '.version')
-        
-        # Check for updates from GitHub
-        if github_data=$(query_github_api "$repo_name" 2>/dev/null); then
-            local latest_version=$(echo "$github_data" | jq -r '.tag_name')
-            local curr_ver="${current_version#v}" new_ver="${latest_version#v}"
-            
-            if [[ "$(echo -e "$curr_ver\n$new_ver" | sort -V | tail -n1)" != "$curr_ver" ]]; then
-                echo "Package $binary_name is installed but an update is available" >&2
-                echo "Current: $current_version --> Latest: $latest_version" >&2
-                echo "Use 'ghpm update $binary_name' to update" >&2
-                return 2  # Special return code for "installed but update available"
-            else
-                echo "Package $binary_name is already installed and up to date (version $current_version)" >&2
-                return 2
+    case "$type" in
+        "repo")
+            # Check if input is empty
+            if [[ -z "$input" ]]; then
+                echo "Error: Missing repository name. Usage: ghpm install owner/repo" >&2
+                return 1
             fi
-        fi
-    else
-        # Check if installed but not managed by us
-        if system_path=$(command -v "$binary_name" 2>/dev/null); then
-            echo "Warning: $binary_name is already installed at $system_path but not managed by ghpm" >&2
-            echo "Remove the existing installation before proceeding" >&2
-            return 3  # Special return code for "installed externally"
-        fi
-    fi
+
+            local repo_name binary_name
+            # Check and split on pipe if present
+            if [[ "$input" == *"|"* ]]; then
+                repo_name=$(echo "$input" | cut -d'|' -f1 | tr -d ' ')
+                binary_name=$(echo "$input" | cut -d'|' -f2 | tr -d ' ')
+                
+                if [[ -z "$binary_name" ]]; then
+                    echo "Error: Empty binary name after '|'" >&2
+                    return 1
+                fi
+            else
+                repo_name="$input"
+                binary_name=$(basename "$repo_name")
+            fi
+
+            # Basic owner/repo format check
+            if [[ ! "$repo_name" =~ ^[^/]+/[^/]+$ ]]; then
+                echo "Error: Invalid repository format '$repo_name'" >&2
+                echo "Usage: ghpm install owner/repo" >&2
+                echo "Tip: If you're looking for a package, try: ghpm search <name>" >&2
+                return 1
+            fi
+
+            # Get GitHub data to verify repo and get latest version
+            local github_data
+            if ! github_data=$(query_github_api "$repo_name"); then
+                case $? in
+                    2) echo "Error: Repository $repo_name not found" >&2 ;;
+                    *) echo "Error: Failed to access GitHub API" >&2 ;;
+                esac
+                return 1
+            fi
+            
+            local latest_version=$(echo "$github_data" | jq -r '.tag_name')
+            echo "${repo_name}:${binary_name}:${latest_version}"
+            ;;
+            
+        "binary")
+            if [[ -z "$input" ]]; then
+                echo "Error: Missing binary name" >&2
+                return 1
+            fi
+            
+            # Check if package is installed and managed by us
+            local managed_info
+            if ! managed_info=$(db_ops get "$input" 2>/dev/null); then
+                if command -v "$input" >/dev/null 2>&1; then
+                    echo "Error: $input is installed but not managed by ghpm" >&2
+                else
+                    echo "Error: $input is not installed" >&2
+                fi
+                return 1
+            fi
+
+            # Get repo and current version from db
+            local repo_name=$(echo "$managed_info" | jq -r '.repo')
+            local current_version=$(echo "$managed_info" | jq -r '.version')
+            
+            # Get latest version from GitHub
+            local github_data
+            if ! github_data=$(query_github_api "$repo_name"); then
+                case $? in
+                    2) echo "Error: Repository $repo_name no longer exists" >&2 ;;
+                    *) echo "Error: Failed to access GitHub API" >&2 ;;
+                esac
+                return 1
+            fi
+            
+            local latest_version=$(echo "$github_data" | jq -r '.tag_name')
+            echo "${repo_name}:${input}:${current_version}:${latest_version}"
+            ;;
+            
+        *)
+            echo "Error: Invalid validation type" >&2
+            return 1
+            ;;
+    esac
     
-    # If we get here, input is valid and package is not installed
-    echo "${repo_name}:${binary_name}"
     return 0
 }
 # this will accept a repo name, and fetch api input with a local cache validation. 
@@ -867,80 +892,15 @@ setup_paths() {
     return 0
 }
 
-check_package() {
-    local package_name="$1"
-    local result="{"
-
-    if ! system_path=$(command -v "$package_name" 2>/dev/null); then
-        echo "${result}\"installed\":false}"
-        return 0
-    fi
-
-    result+="\"installed\":true,\"path\":\"$system_path\","
-
-    if ! managed_info=$(db_ops get "$package_name" 2>/dev/null) || \
-       [[ "$system_path" != "$(echo "$managed_info" | jq -r '.installed_files[] | select(.type=="binary") | .location')" ]]; then
-        # Handle multi-line version output
-        local raw_version=$("$system_path" --version 2>/dev/null)
-        # Look for version pattern in each line
-        if [[ "$raw_version" =~ v?([0-9]+\.[0-9]+\.[0-9]+) ]]; then
-            version="v${BASH_REMATCH[1]}"
-        else
-            version="version unknown"
-        fi
-        result+="\"managed_by\":\"external\",\"version\":\"$version\"}"
-        echo "$result"
-        return 0
-    fi
-
-    local installed_ver=$(echo "$managed_info" | jq -r '.version')
-    local repo=$(echo "$managed_info" | jq -r '.repo')
-    result+="\"managed_by\":\"script\",\"repo\":\"$repo\",\"version\":\"$installed_ver\""
-
-    if github_data=$(query_github_api "$repo" 2>/dev/null); then
-        latest_ver=$(echo "$github_data" | jq -r '.tag_name')
-        curr_ver="${installed_ver#v}" new_ver="${latest_ver#v}"
-        result+=",\"latest_version\":\"$latest_ver\",\"update_available\":\
-$(if [[ "$(echo -e "$curr_ver\n$new_ver" | sort -V | tail -n1)" != "$curr_ver" ]]; then echo true; else echo false; fi)"
-    fi
-
-    echo "$result}"
-}
 
 standalone_install() {
     local repo_name="$1"
     local silent=${2:-false}
 
     local repo_name binary_name
-    IFS=':' read -r repo_name binary_name < <(validate_input "$repo_name") || return 1
+    IFS=':' read -r repo_name binary_name latest_version < <(validate_input repo "$repo_name") || return 1
 
      # Check existing installation
-    local status
-    if status=$(check_package "$binary_name"); then
-        if [[ $(echo "$status" | jq -r '.installed') == "true" ]]; then
-            local current_ver=$(echo "$status" | jq -r '.version')
-            
-            if [[ $(echo "$status" | jq -r '.managed_by') == "script" ]]; then
-                if [[ "$silent" == "false" ]]; then
-                    if [[ $(echo "$status" | jq -r '.update_available') == "true" ]]; then
-                        local latest_ver=$(echo "$status" | jq -r '.latest_version')
-                        echo "Package $binary_name is installed but an update is available"
-                        echo "Current: $current_ver --> Latest: $latest_ver"
-                        echo "Use 'ghpm update $binary_name' to update"
-                    else
-                        echo "Package $binary_name is already installed and up to date (version $current_ver)"
-                    fi
-                fi
-                return 1
-            else
-                if [[ "$silent" == "false" ]]; then
-                    echo "Package $binary_name is already installed ($current_ver) but not managed by this script"
-                    echo "Please uninstall the current version and retry the installer"
-                fi
-                return 1
-            fi
-        fi
-    fi
     
     # Process repo release data
     local api_response=$(query_github_api "$repo_name") || return 1
@@ -1207,8 +1167,6 @@ update_package() {
     local package_name="${1:-all}"
     local -a packages_to_update=()
     
-    
-    
     if [[ "$package_name" == "all" || "$package_name" == "" ]]; then
         if ! all_packages=$(jq -r 'keys[]' "$DB_FILE"); then
             echo " No packages installed via GHPM."
@@ -1216,10 +1174,7 @@ update_package() {
         fi
         readarray -t packages_to_update <<< "$all_packages"
     else
-        if ! check_result=$(check_package "$package_name"); then
-            echo "Error checking package status."
-            return 1
-        fi
+        local check_result=$(validate_input binary "$package_name")
         if [[ $(echo "$check_result" | jq -r '.installed') == "false" ]]; then
             echo "Package $package_name is not installed. You can install it with $0 install <reponame> if it is has releases on github."
             return 1
