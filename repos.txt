@@ -10,3 +10,9 @@ jesseduffield/lazygit
 
 tldr-pages/tldr-c-client
 zyedidia/micro
+Schniz/fnm
+dalance/procs
+ClementTsang/bottom
+dandavison/delta
+aristocratos/btop
+pemistahl/grex
