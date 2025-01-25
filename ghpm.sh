@@ -1,7 +1,7 @@
 #! /usr/bin/env bash
 
-#set -euo pipefail      # set -e error handling, -u undefined variable protection -o pipefail piepline faulure catching. 
-DISPLAY_ISSUES=false # make log output visible. 
+set -euo pipefail      # set -e error handling, -u undefined variable protection -o pipefail piepline faulure catching. 
+DISPLAY_ISSUES=true # make log output visible. 
 
 # Configure folders
 DATA_DIR="${PWD}/.local/share/ghpm"
@@ -144,15 +144,19 @@ validate_input() {
             fi
 
             # Get GitHub data to verify repo and get latest version
-            local github_data
-            if ! github_data=$(query_github_api "$repo_name"); then
-                case $? in
-                    2) echo "Error: Repository $repo_name not found" >&2 ;;
-                    *) echo "Error: Failed to access GitHub API" >&2 ;;
-                esac
-                return 1
+            local github_data ret
+            github_data=$(query_github_api "$repo_name")
+            ret=$?
+            if [[ $ret -ne 0 ]]; then
+                if [[ $ret -eq 2 ]]; then
+                    echo "Error: Repository $repo_name not found. Please check the repository name and try again." >&2
+                    exit 2
+                else 
+                    echo "Error: Failed to access GitHub API. Please check your connection and try again." >&2
+                    exit 1
+                fi
             fi
-            
+
             local latest_version=$(echo "$github_data" | jq -r '.tag_name')
             echo "${repo_name}:${binary_name}:${latest_version}"
             ;;
@@ -883,10 +887,12 @@ standalone_install() {
     local repo_name="$1"
     local silent=${2:-false}
 
-    local repo_name binary_name
-    IFS=':' read -r repo_name binary_name latest_version < <(validate_input repo "$repo_name") || return 1
-
-     # Check existing installation
+    local repo_name binary_name latest_version
+    if ! validation_output=$(validate_input repo "$repo_name"); then
+        [[ "$silent" == "false" ]] && echo "$validation_output" >&2
+        return 1
+    fi
+    IFS=':' read -r repo_name binary_name latest_version <<< "$validation_output"
     
     # Process repo release data
     local api_response=$(query_github_api "$repo_name") || return 1
