@@ -642,7 +642,7 @@ prep_install_files() {
 
     # Define completion file patterns for each shell
     local bash_pattern='.*completion.*bash$|.*\.bash$|.*\.bash-completion$'
-    local zsh_pattern='.*completion.*zsh$|.*/_.*|.*\.zsh$'
+    local zsh_pattern='.*completion.*zsh$|^_[^.]*$|.*\.zsh$|.*/_[^.]*$' # Added pattern for subdirs
     local fish_pattern='.*completion.*fish$|.*\.fish$'
 
     # echo "installed shells:"
