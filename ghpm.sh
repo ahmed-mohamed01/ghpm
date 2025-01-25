@@ -1348,7 +1348,7 @@ main() {
             local repos_file="$1"
             batch_install "$repos_file" "$silent" ;;
 
-        "--list")
+        "list")
             db_ops list ;;
 
         "--version")
