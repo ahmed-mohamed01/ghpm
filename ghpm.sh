@@ -143,6 +143,24 @@ validate_input() {
                 return 1
             fi
 
+            # Check if already installed
+            local installed_info
+            if installed_info=$(db_ops get "$binary_name" 2>/dev/null); then
+                local current_version=$(echo "$installed_info" | jq -r '.version')
+                local github_data
+                github_data=$(query_github_api "$repo_name") || { handle_repo_error $? "$repo_name" || return $?; }
+                local latest_version=$(echo "$github_data" | jq -r '.tag_name')
+                
+                if [[ "${current_version#v}" == "${latest_version#v}" ]]; then
+                    echo "Package $binary_name is already installed and up to date (version $current_version)" >&2
+                    return 3 
+                else
+                    echo "Note: $binary_name is installed (version $current_version). Latest version is $latest_version" >&2
+                    echo "Run $0 update $binary_name to update"
+                    return 1
+                fi
+            fi
+
             # Get GitHub data to verify repo and get latest version
             local github_data ret
             github_data=$(query_github_api "$repo_name")
@@ -157,7 +175,6 @@ validate_input() {
                 fi
             fi
 
-            local latest_version=$(echo "$github_data" | jq -r '.tag_name')
             echo "${repo_name}:${binary_name}:${latest_version}"
             ;;
             
@@ -201,6 +218,8 @@ validate_input() {
     esac
     
     return 0
+    # return 2 if not found
+    # return 3 if installed and up to date
 }
 # this will accept a repo name, and fetch api input with a local cache validation. 
 query_github_api() {
