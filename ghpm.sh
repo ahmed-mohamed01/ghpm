@@ -1,6 +1,6 @@
 #! /usr/bin/env bash
 
-set -euo pipefail      # set -e error handling, -u undefined variable protection -o pipefail piepline faulure catching. 
+set -uo pipefail      # set -e error handling, -u undefined variable protection -o pipefail piepline faulure catching. 
 DISPLAY_ISSUES=true # make log output visible. 
 
 # Configure folders
@@ -39,6 +39,9 @@ readonly YELLOW='\033[1;33m'
 readonly RED='\033[0;31m'
 readonly GREEN='\033[0;32m'
 readonly NC='\033[0m'
+
+# Declare SHELL_STATUS as global associative array
+declare -A SHELL_STATUS=([bash]=0 [zsh]=0 [fish]=0)
 
 # Store important 
 declare -g system_arch=$(uname -m)
@@ -143,13 +146,16 @@ validate_input() {
                 return 1
             fi
 
+            # Declare latest_version at the start
+            local latest_version=""
+
             # Check if already installed
             local installed_info
             if installed_info=$(db_ops get "$binary_name" 2>/dev/null); then
                 local current_version=$(echo "$installed_info" | jq -r '.version')
                 local github_data
                 github_data=$(query_github_api "$repo_name") || { handle_repo_error $? "$repo_name" || return $?; }
-                local latest_version=$(echo "$github_data" | jq -r '.tag_name')
+                latest_version=$(echo "$github_data" | jq -r '.tag_name')
                 
                 if [[ "${current_version#v}" == "${latest_version#v}" ]]; then
                     echo "Package $binary_name is already installed and up to date (version $current_version)" >&2
@@ -358,7 +364,7 @@ process_asset_data() {
         if [[ "$name" =~ ${EXCLUDED_PATTERNS[$system_arch]} ]]; then
             excluded_assets+=("{\"name\":\"$name\",\"reason\":\"excluded pattern\",\"url\":\"$url\"}")
             continue    
-        elif [[ "$name" =~ [Ss]ource([._-]?)[Cc]ode|[Ss]ource([._-]?[Ff]iles?)?|[Ss]ource\.(tar\.gz|tgz|zip)$ ]]; then
+        elif [[ "$name" =~ [Ss]ource([._-]?)[Cc]ode|[Ss]ource([._-]?[Ff]iles?)?|[Ss]ource\.(tar\.gz|tgz)$ ]]; then
             source_files+=("{\"name\":\"$name\",\"url\":\"$url\"}")
             excluded_assets+=("{\"name\":\"$name\",\"reason\":\"source code archive\",\"url\":\"$url\"}")
             continue
@@ -617,7 +623,7 @@ prep_install_files() {
     local completions_url="$4"
     local -n return_sorted_files=$5
     local -n return_install_map=$6
-    eval $("detect_installed_shells")
+    detect_installed_shells
 
     rm -rf "$REPO_EXTRACTED_DIR"
     mkdir -p "$REPO_EXTRACTED_DIR"
@@ -722,16 +728,10 @@ prep_install_files() {
 }
 
 detect_installed_shells() {
-    # Array of supported shells and their status
-    declare -A SHELL_STATUS=([bash]=0 [zsh]=0 [fish]=0)
-    
     # Check each shell - both binary and config existence required
     [[ $(command -v bash 2>/dev/null) && -f "$HOME/.bashrc" ]] && SHELL_STATUS[bash]=1 
     [[ $(command -v zsh 2>/dev/null) && -f "$HOME/.zshrc" ]] && SHELL_STATUS[zsh]=1
     [[ $(command -v fish 2>/dev/null) && -d "$HOME/.config/fish" ]] && SHELL_STATUS[fish]=1
-
-    # Return array by reference 
-    declare -p SHELL_STATUS
 }
 
 db_ops() {
@@ -852,7 +852,7 @@ db_ops() {
 
 setup_paths() {
     # Check for traditional shells
-    eval $(detect_installed_shells)
+    detect_installed_shells
 
     local shell_files=()
     [[ -f "$HOME/.bashrc" ]] && shell_files+=("$HOME/.bashrc")
@@ -861,7 +861,7 @@ setup_paths() {
     # Setup for bash/zsh
     for rc_file in "${shell_files[@]}"; do
         # Skip if shell is not available
-        shell_name=$(basename "${rc_file%rc}")
+        shell_name=$(basename "$rc_file" | sed 's/^\.\([^.]*\)rc$/\1/')
         [[ "${SHELL_STATUS[$shell_name]}" -eq 0 ]] && continue
         
         if [[ -f "$rc_file" ]]; then
