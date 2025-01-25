@@ -93,24 +93,6 @@ log() {
     fi
 }
 
-progress() {
-    local msg="$1"
-    local exit_status="$2"
-    
-    if [[ -z "$exit_status" ]]; then
-        # Start mode
-        printf "%s..." "$msg"
-    else
-        # End mode
-        if [[ $exit_status == 0 ]]; then
-            printf "\r\033[K%s... ${GREEN}Success!${NC}\n" "$msg"
-        else
-            printf "\r\033[K%s... ${RED}Failed!${NC}\n" "$msg"
-        fi
-        return $exit_status
-    fi
-}
-
 validate_input() {
     local type="$1"    # 'repo' or 'binary'
     local input="$2"
@@ -184,49 +166,13 @@ validate_input() {
             echo "${repo_name}:${binary_name}:${latest_version}"
             ;;
             
-        "binary")
-            if [[ -z "$input" ]]; then
-                echo "Error: Missing binary name" >&2
-                return 1
-            fi
-            
-            # Check if package is installed and managed by us
-            local managed_info
-            if ! managed_info=$(db_ops get "$input" 2>/dev/null); then
-                if command -v "$input" >/dev/null 2>&1; then
-                    echo "Error: $input is installed but not managed by ghpm" >&2
-                else
-                    echo "Error: $input is not installed" >&2
-                fi
-                return 1
-            fi
-
-            # Get repo and current version from db
-            local repo_name=$(echo "$managed_info" | jq -r '.repo')
-            local current_version=$(echo "$managed_info" | jq -r '.version')
-            
-            # Get latest version from GitHub
-            local github_data
-            if ! github_data=$(query_github_api "$repo_name"); then
-                case $? in
-                    2) echo "Error: Repository $repo_name no longer exists" >&2 ;;
-                    *) echo "Error: Failed to access GitHub API" >&2 ;;
-                esac
-                return 1
-            fi
-            
-            local latest_version=$(echo "$github_data" | jq -r '.tag_name')
-            echo "${repo_name}:${input}:${current_version}:${latest_version}" ;;
-            
-        *)
-            echo "Error: Invalid validation type" >&2
-            return 1 ;;
     esac
     
     return 0
     # return 2 if not found
     # return 3 if installed and up to date
 }
+
 # this will accept a repo name, and fetch api input with a local cache validation. 
 query_github_api() {
     local repo_name="$1"
@@ -448,7 +394,6 @@ download_asset() {
     get_cache_paths "$repo_name"
 
     local asset_name
-    # Determine asset name first
     if [[ "$asset_input" =~ ^https?:// ]]; then
         asset_name=$(basename "$asset_input")
     else
@@ -466,12 +411,11 @@ download_asset() {
         current_hash=$(sha256sum "$cached_asset" | awk '{print $1}')
         
         if [[ -n "$cached_url" && -n "$cached_hash" && "$current_hash" == "$cached_hash" ]]; then
-                #log "INFO" "Using cached asset: $cached_asset"
+                log quiet "INFO" "Using cached asset: $cached_asset"
                 echo "$cached_asset"  # Return path to cached asset
                 return 0
             fi
     fi
-    
 
     # If we get here, we need to get/verify the URL and download
     local asset_url
@@ -531,14 +475,8 @@ download_asset() {
 extract_package() {
     local package_archive="$1"
     local extract_dir="$2"
+    [[ ! -f "$package_archive" ]] && echo "Error: Package archive does not exist: $package_archive" >&2 && return 1
 
-    # Check if archive exists
-    if [[ ! -f "$package_archive" ]]; then
-        echo "Error: Package archive does not exist: $package_archive" >&2
-        return 1
-    fi
-
-    # Create extraction directory if it doesn't exist
     mkdir -p "$extract_dir"
 
     # Determine archive type and extract
@@ -554,8 +492,6 @@ extract_package() {
         echo "Error: Failed to extract $package_archive" >&2
         return 1
     fi
-
-    #echo "$extract_dir"
     return 0
 }
 
@@ -602,20 +538,6 @@ validate_binary() {
     return 0
 }
 
-get_dependencies() {
-    local binary_path="$1"
-    
-    # Check if ldd is available
-    if command -v ldd &> /dev/null; then
-        local deps=$(ldd "$binary_path" 2>/dev/null | grep "=>" | awk '{print $1}')
-        echo "$deps"
-        return 0
-    fi
-    
-    echo "Warning: ldd not available to check dependencies" >&2
-    return 1
-}
-
 prep_install_files() {
     local repo_name="$1"
     local main_url="$2"
@@ -623,7 +545,6 @@ prep_install_files() {
     local completions_url="$4"
     local -n return_sorted_files=$5
     local -n return_install_map=$6
-    detect_installed_shells
 
     rm -rf "$REPO_EXTRACTED_DIR"
     mkdir -p "$REPO_EXTRACTED_DIR"
@@ -653,7 +574,6 @@ prep_install_files() {
         log "ERROR" "Unable to download main asset"
         return 1
     fi
-    
 
     # Download and extract all provided URLs
     local urls=("$man_url" "$completions_url")
@@ -670,14 +590,17 @@ prep_install_files() {
     done
 
     # Define completion file patterns for each shell
-    local bash_pattern='.*completion.*bash$|.*\.bash$|.*\.bash-completion$'
-    local zsh_pattern='.*completion.*zsh$|^_[^.]*$|.*\.zsh$|.*/_[^.]*$' # Added pattern for subdirs
-    local fish_pattern='.*completion.*fish$|.*\.fish$'
+    local -A completion_patterns=(
+        ["bash_completion"]='.*completion.*bash$|.*\.bash$|.*\.bash-completion$'
+        ["zsh_completion"]='.*completion.*zsh$|^_[^.]*$|.*\.zsh$|.*/_[^.]*$'
+        ["fish_completion"]='.*completion.*fish$|.*\.fish$'
+    )
 
-    # echo "installed shells:"
-    # for shell in "${!SHELL_STATUS[@]}"; do
-    #     echo "Status of $shell is: ${SHELL_STATUS[$shell]}"
-    # done
+    local -A completion_dirs=(
+        ["bash_completion"]="$BASH_COMPLETION_DIR"
+        ["zsh_completion"]="$ZSH_COMPLETION_DIR"
+        ["fish_completion"]="$FISH_COMPLETION_DIR"
+    )
 
     # Process all files in extracted directory
     while IFS= read -r file; do
@@ -692,17 +615,15 @@ prep_install_files() {
             local section=${BASH_REMATCH[1]}
             file_type="man${section}"
             target_path="$MAN_DIR/man${section}/$filename"
-
-        # Check for shell completions
-        elif [[ ${SHELL_STATUS[bash]} -eq 1 && "$file" =~ $bash_pattern ]]; then
-            file_type="bash_completion"
-            target_path="$BASH_COMPLETION_DIR/$filename"
-        elif [[ ${SHELL_STATUS[zsh]} -eq 1 && "$file" =~ $zsh_pattern ]]; then
-            file_type="zsh_completion"
-            target_path="$ZSH_COMPLETION_DIR/$filename"
-        elif [[ ${SHELL_STATUS[fish]} -eq 1 && "$file" =~ $fish_pattern ]]; then
-            file_type="fish_completion"
-            target_path="$FISH_COMPLETION_DIR/$filename"
+        else
+            # Check for shell completions
+            for shell_type in "${!completion_patterns[@]}"; do
+                if [[ "$file" =~ ${completion_patterns[$shell_type]} ]]; then
+                    file_type="$shell_type"
+                    target_path="${completion_dirs[$shell_type]}/$filename"
+                    break
+                fi
+            done
         fi
 
         # Add file to arrays if type was identified
@@ -715,23 +636,6 @@ prep_install_files() {
     done < <(find "$REPO_EXTRACTED_DIR" -type f)
     
     return 0
-    # Output are two associative arrays
-    # # source_dir=(
-    #     [binary]="path/to/extracted/eza"
-    #     [man1]="path/to/extracted/eza.1"
-    #     [bash-completions]="path/to/extracted/eza.bash"   )
-    #destination_dir=(
-    #     [binary]="${install_dir}/eza"
-    #     [man1]="${MAN_PATH}/eza.1"
-    #)
-
-}
-
-detect_installed_shells() {
-    # Check each shell - both binary and config existence required
-    [[ $(command -v bash 2>/dev/null) && -f "$HOME/.bashrc" ]] && SHELL_STATUS[bash]=1 
-    [[ $(command -v zsh 2>/dev/null) && -f "$HOME/.zshrc" ]] && SHELL_STATUS[zsh]=1
-    [[ $(command -v fish 2>/dev/null) && -d "$HOME/.config/fish" ]] && SHELL_STATUS[fish]=1
 }
 
 db_ops() {
@@ -851,56 +755,49 @@ db_ops() {
 }
 
 setup_paths() {
-    # Check for traditional shells
-    detect_installed_shells
-
-    local shell_files=()
-    [[ -f "$HOME/.bashrc" ]] && shell_files+=("$HOME/.bashrc")
-    [[ -f "$HOME/.zshrc" ]] && shell_files+=("$HOME/.zshrc")
+    local -A shell_configs=(
+        ["bash"]="$HOME/.bashrc"
+        ["zsh"]="$HOME/.zshrc"
+        ["fish"]="$HOME/.config/fish/config.fish"
+    )
     
-    # Setup for bash/zsh
-    for rc_file in "${shell_files[@]}"; do
-        # Skip if shell is not available
-        shell_name=$(basename "$rc_file" | sed 's/^\.\([^.]*\)rc$/\1/')
-        [[ "${SHELL_STATUS[$shell_name]}" -eq 0 ]] && continue
+    local -A path_commands=(
+        ["bash"]="export PATH=\"\$PATH:$INSTALL_DIR\""
+        ["zsh"]="export PATH=\"\$PATH:$INSTALL_DIR\""
+        ["fish"]="fish_add_path $INSTALL_DIR"
+    )
+    
+    local -A manpath_commands=(
+        ["bash"]="export MANPATH=\"\$MANPATH:$MAN_DIR\""
+        ["zsh"]="export MANPATH=\"\$MANPATH:$MAN_DIR\""
+        ["fish"]="set -x MANPATH \$MANPATH $MAN_DIR"
+    )
+    
+    # Process each supported shell
+    for shell in "${!shell_configs[@]}"; do
+        local config_file="${shell_configs[$shell]}"
         
-        if [[ -f "$rc_file" ]]; then
-            [[ "$(tail -c1 "$rc_file" | wc -l)" -eq 0 ]] || echo "" >> "$rc_file"
+        # Skip if shell binary not found or config doesn't exist
+        [[ ! $(command -v "$shell" 2>/dev/null) || ! -f "$config_file" ]] && continue
+        
+        # Ensure newline at end of file
+        [[ "$(tail -c1 "$config_file" | wc -l)" -eq 0 ]] || echo "" >> "$config_file"
+        
+        # Update PATH if needed
+        if ! grep -q "${path_commands[$shell]}" "$config_file"; then
+            echo "${path_commands[$shell]}" >> "$config_file"
+            log "INFO" "Added $INSTALL_DIR to PATH in $config_file"
+            echo "$INSTALL_DIR added to PATH. Please run: source $(basename "$config_file")"
         fi
-
-        if ! grep -q "export PATH=.*$INSTALL_DIR" "$rc_file"; then
-            echo "export PATH=\"\$PATH:$INSTALL_DIR\"" >> "$rc_file"
-            log "INFO" "Added $INSTALL_DIR to PATH in $rc_file"
-            echo "$INSTALL_DIR added to PATH. Please run: source ~$(basename "$rc_file")"
-        fi
-        if ! grep -q "export MANPATH=.*$MAN_DIR" "$rc_file"; then
-            echo "export MANPATH=\"\$MANPATH:$MAN_DIR\"" >> "$rc_file"
-            log "INFO" "Added $MAN_DIR to MANPATH in $rc_file"
-            echo "$MAN_DIR added to MANPATH. Please run: source ~$(basename "$rc_file")"
+        
+        # Update MANPATH if needed
+        if ! grep -q "${manpath_commands[$shell]}" "$config_file"; then
+            echo "${manpath_commands[$shell]}" >> "$config_file"
+            log "INFO" "Added $MAN_DIR to MANPATH in $config_file"
+            echo "$MAN_DIR added to MANPATH. Please run: source $(basename "$config_file")"
         fi
     done
-
-    # Setup for fish
-    local fish_config="$HOME/.config/fish/config.fish"
-    if [[ -f "$fish_config" ]]; then
-        # Check and add newline first if needed
-        [[ "$(tail -c1 "$fish_config" | wc -l)" -eq 0 ]] || echo "" >> "$fish_config"
-        
-        if ! grep -q "fish_add_path.*$INSTALL_DIR" "$fish_config"; then
-            echo "fish_add_path $INSTALL_DIR" >> "$fish_config"
-            log "INFO" "Added $INSTALL_DIR to PATH in config.fish"
-            echo "$INSTALL_DIR added to PATH. Please run: source ~/.config/fish/config.fish"
-        fi
-        if ! grep -q "set -x MANPATH.*$MAN_DIR" "$fish_config"; then
-            echo "set -x MANPATH \$MANPATH $MAN_DIR" >> "$fish_config"
-            log "INFO" "Added $MAN_DIR to MANPATH in config.fish"
-            echo "$MAN_DIR added to MANPATH. Please run: source ~/.config/fish/config.fish"
-        fi
-    fi
-
-    return 0
 }
-
 
 standalone_install() {
     local repo_name="$1"
@@ -1317,7 +1214,7 @@ search_packages() {
         
         local auth_header=""
         [[ -n "${GITHUB_TOKEN:-}" ]] && auth_header="Authorization: token $GITHUB_TOKEN"
-        
+
         local items_response
         if [[ -n "$auth_header" ]]; then
             items_response=$(curl -sS -H "$auth_header" -H "Accept: application/vnd.github.v3+json" "$api_url")
