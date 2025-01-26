@@ -127,27 +127,14 @@ Once it has package names, GitHub version, APT version, asset name and whether o
         bat             0.24.0*      0.19.0       bat-v0.24.0-aarch64-unknown-linux-gnu.tar.gz (downl...     
         tldr            source       0.6.4        -  
 
+        Skipped repos:
+                - tldr-pages/tldr-c-client (no viable assets)
+                - Schniz/fnm (no viable assets)
+
         Dependencies needed:
-        No additional dependencies required
+                No additional dependencies required
 
-        Installation options:
-        1. Install all newer versions
-        2. Install all GitHub versions (to /home/ahmed/.local/bin)
-        3. Install all APT versions
-        4. Choose individually
-        5. Cancel
-        Select installation method [1-5]:
-                        
-        - option 1 installs apt or GitHub depending on which ever is newest. If it is a mixture of apt/GitHub versions give user a lsit of GitHub and apt versions to install. and inform that it will need sudo access if there are any apt installs. otherwise proceed as if its a all GitHub install. 
-        - option 2 installs GitHub versions
-        - option 3 will use apt to download versions (sudo apt install -y package1 package2 package3....) and prompt user that this will need sudo access.
-        - option 4 will allow user to choose each version independently:
-        
-        Zoxide   APT version v  GitHub ver 
-
-        1. Install from GitHub
-        2. Install from APT
-        3. Skip
+        Install all repos? [y/Y] _
 
 Once a GitHub release is chosen:
 It will extract the files to a temp dir (from cache dir, as any newly downloaded files are copied here as well) and check for binaries, completions files and man files. LIst of files to be installed will be added to $DATA_DIR/gpi-db.json (called packages.json in the script)
