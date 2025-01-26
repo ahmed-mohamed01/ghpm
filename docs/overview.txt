@@ -93,7 +93,23 @@ Example output:
             man-1 --> /home/ahmed/.local/share/man/man1/fzf.1
             bash.completions --> /home/ahmed/.local/share/bash/completions
 
+        Dependencies:
+            None
+
         Proceed to install? [y/N]
+
+        Installing files...
+
+        Installing bat: /home/ahmed/ghpm/.local/bin/bat
+        Installing bat.1: /home/ahmed/ghpm/.local/share/man/man1/bat.1
+        Installing bat.fish: /home/ahmed/ghpm/.config/fish/completions/bat.fish
+        Installing bat.bash: /home/ahmed/ghpm/.local/share/bash-completion/completions/bat.bash
+        Installing bat.zsh: /home/ahmed/ghpm/.local/share/zsh/site-functions/bat.zsh
+
+        Installed bat to /home/ahmed/ghpm/.local/bin
+
+        Install depencencies by running command:
+                sudo apt install -y dep1 lib2
 
 ghpm --file [location/file.txt] takes a file as input, and will cycle through the entries in the file. 
 - it takes repo-name or | alias as binary name (provided in repos.txt as owner/repo-name | binary-name) binary-name or alias is optional.
@@ -141,6 +157,37 @@ Once it has package names, GitHub version, APT version, asset name and whether o
 
         Please install missing depencies using command:
             sudo apt install -y libncurses5-dev libncursesw5-dev
+
+
+        Processing (7) repositories from repos.txt:
+
+        Binary          Github       APT          Asset                                             
+        ------------------------------------------------------------------------------------------------
+        fzf             0.57.0*      0.29.0       fzf-0.57.0-linux_amd64.tar.gz (cached)                     
+        micro           2.0.14*      2.0.9        micro-2.0.14-linux-arm.tar.gz (Cached)                  
+        zoxide          0.9.6*       0.4.3        zoxide-0.9.6-aarch64-linux-android.tar.gz (cached)        
+        eza             0.20.14*     not found    eza_aarch64-unknown-linux-gnu.tar.gz (downloaded)             
+        fd              10.2.0*      not found    fd-v10.2.0-aarch64-unknown-linux-gnu.tar.gz (cached)      
+        bat             0.24.0*      0.19.0       bat-v0.24.0-aarch64-unknown-linux-gnu.tar.gz (downl...     
+        tldr            source       0.6.4        -  
+
+        Skipped repos:
+                - tldr-pages/tldr-c-client (no viable assets)
+                - junegunn/fzf (installed and up to date)
+                - ajeetdsouza/zoxide (installed and up to date)
+                - sharkdp/bat (installed, update available)
+
+        Dependencies needed:
+                libgen
+
+        Install all repos? [y/Y] _
+
+        Installation complete: 4/4 repository packages installed successfully. 3 Repos skipped as above. 
+
+        Run ghpm update bat to update repo sharkpd/bat. 
+
+        Please install missing depencies using command:
+            sudo apt install -y libgen
 
 
 Once a GitHub release is chosen:
