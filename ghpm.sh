@@ -498,6 +498,8 @@ extract_package() {
 validate_binary() {
     local given_path="$1"
     local dependencies=()
+    declare -g MISSING_PACKAGES=()
+    local missing_libs=()
 
     # Find the executable
     local binary_path
@@ -507,35 +509,71 @@ validate_binary() {
         return 1
     fi
 
+    local binary_name=$(basename "$binary_path")
+    log quiet "INFO" "Binary [$binary_name] found at $binary_path"
+
     declare -A FILE_PATTERNS=(
         [x86_64]="ELF|x86[-_ ]64|LSB" 
         [aarch64]="ELF|*aarch64.*LSB.*"
     )
 
     # Verify executable is actually a binary
-    local binary_name=$(basename $binary_path)
     local file_info=$(file -b "$binary_path")
     if [[ ! "$file_info" =~ ${FILE_PATTERNS[$system_arch]} ]]; then
         log "ERROR" "Incompatible binary. Expected pattern: ${FILE_PATTERNS[$system_arch]} but got: $file_info"
         return 1
     fi
-    # Check dependencies if dynamically linked
-    if ldd "$binary_path" &>/dev/null; then
-        local missing_deps
-        missing_deps=$(ldd "$binary_path" | grep "not found")
-        if [[ -n "$missing_deps" ]]; then
-            log "ERROR" "Missing dependencies for $binary_path:\n$missing_deps"
-            return 1
-        fi
-        # Collect dependencies
-        dependencies=($(ldd "$binary_path" | awk '/=>/ {print $3}' | xargs -n1 basename | sort -u))
-        if [[ ${#dependencies[@]} -gt 0 ]]; then
-            log quiet "INFO" "Binary [$binary_name] has dependencies: ${dependencies[*]}"
-        fi
-    else
-        log quiet "INFO" "Binary $binary_name is statically linked or does not require dynamic dependencies."
+
+    # Check if binary is statically linked
+    if ! ldd "$binary_path" &>/dev/null || [[ $(ldd "$binary_path" 2>&1) =~ "not a dynamic executable" ]]; then
+        log quiet "INFO" "Binary [$binary_name] is statically linked"
+        echo "$binary_path"
+        return 0
     fi
 
+    # Collect all dependencies and check for missing ones
+    while IFS= read -r line; do
+        if [[ "$line" =~ "=>" ]]; then
+            local lib_path=$(echo "$line" | awk '{print $3}')
+            if [[ "$lib_path" == "not" ]]; then
+                local lib_name=$(echo "$line" | awk '{print $1}')
+                missing_libs+=("$lib_name")
+            else
+                dependencies+=($(basename "$lib_path"))
+            fi
+        fi
+    done < <(ldd "$binary_path")
+
+    # Log all dependencies
+    if [[ ${#dependencies[@]} -gt 0 ]]; then
+        log quiet "INFO" "Binary [$binary_name] has dependencies: ${dependencies[*]}"
+    fi
+
+    # Process missing dependencies if any
+    if [[ ${#missing_libs[@]} -gt 0 ]]; then
+        for lib in "${missing_libs[@]}"; do
+            local pkg_name=""
+            if command -v apt-file &>/dev/null; then
+                pkg_name=$(apt-file search -l "$lib" 2>/dev/null | head -n1)
+            elif command -v dpkg &>/dev/null; then
+                pkg_name=$(dpkg -S "$lib" 2>/dev/null | cut -d: -f1 || echo "")
+            fi
+            
+            if [[ -n "$pkg_name" ]]; then
+                MISSING_PACKAGES+=("$pkg_name")
+            else
+                MISSING_PACKAGES+=("unknown-package-for-$lib")
+            fi
+        done
+        
+        log quiet "INFO" "Binary [$binary_name] missing dependencies: ${missing_libs[*]}"
+        log "ERROR" "Missing dependencies for $binary_path"
+        return 1
+    else
+        log quiet "INFO" "Binary [$binary_name] missing dependencies: none"
+    fi
+
+    export DEPENDENCIES=("${dependencies[@]}")
     echo "$binary_path"
     return 0
 }
