@@ -921,24 +921,26 @@ standalone_install() {
 batch_install() {
     local repos_file="$1"
     local silent="${2:-false}"
-
+    local all_dependencies=()
+    
     [[ ! -f "$repos_file" ]] && log "ERROR" "Repositories file '$repos_file' not found." && return 1
 
     if [[ "$silent" == "false" ]]; then
         echo "Processing repositories from $repos_file:"
         echo
-        echo "Checking versions..."
         printf "%-15s %-12s %-12s %-50s\n" "Binary" "Github" "APT" "Asset"
         echo "------------------------------------------------------------------------------------------------"
     fi
 
-    # Initialize package arrays
+    # Initialize arrays
     local repo_list=() binary_names=() gh_versions=() apt_versions=() assets=() total_repos=()
     local skipped_repos=() skipped_reasons=()
-    local valid_packages=0 needs_update=false
+    local valid_packages=0
+
     while IFS= read -r line; do
         [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
         ((total_repos++))
+        
         local repo_name binary_name
         if [[ "$line" == *"|"* ]]; then
             IFS='|' read -r repo_name binary_name <<< "$line"
@@ -948,29 +950,55 @@ batch_install() {
             repo_name=$(echo "$line" | xargs)
             binary_name=$(echo "$repo_name" | cut -d'/' -f2)
         fi
-        get_cache_paths "$repo_name"
-
-        # Query github api for the repo, and process it
-        local gh_response=$(query_github_api "$repo_name") || continue
-        local processed_data=$(process_asset_data "$gh_response") || continue
         
-        # Extract info in one jq call
-        local gh_version chosen_asset has_source
+        # Process repository
+        local gh_response processed_data
+        if ! gh_response=$(query_github_api "$repo_name"); then
+            skipped_repos+=("$repo_name")
+            skipped_reasons+=("API error")
+            continue
+        fi
+        
+        if ! processed_data=$(process_asset_data "$gh_response"); then
+            skipped_repos+=("$repo_name")
+            skipped_reasons+=("processing error")
+            continue
+        fi
+
+        # Extract version and asset info
+        local gh_version chosen_asset has_source asset_url
         gh_version=$(echo "$processed_data" | jq -r '.version')
         chosen_asset=$(echo "$processed_data" | jq -r '.chosen_asset.name')
         has_source=$(echo "$processed_data" | jq -r '.has_source_files')
-        
-        # Find apt version
+        asset_url=$(echo "$processed_data" | jq -r '.chosen_asset.url')
+
+        # Check APT version
         local apt_version="not found"
         if command -v apt-cache >/dev/null 2>&1; then
-            apt_version=$(apt-cache policy "$binary_name" 2>/dev/null | grep 'Candidate:' | sed -E 's/.*Candidate: //; s/-[^-]*ubuntu[^-]*//; s/-$//; s/[^0-9.].*//; s/^/v/')
+            apt_version=$(apt-cache policy "$binary_name" 2>/dev/null | 
+                         grep 'Candidate:' | 
+                         sed -E 's/.*Candidate: //; s/-[^-]*ubuntu[^-]*//; s/-$//; s/[^0-9.].*//; s/^/v/')
             [[ -z "$apt_version" || "$apt_version" == "none" ]] && apt_version="not found"
         fi
-        
+
+        # Handle source-only or no viable assets
         if [[ "$chosen_asset" == "null" || -z "$chosen_asset" ]]; then
             skipped_repos+=("$repo_name")
             [[ "$has_source" == "true" ]] && skipped_reasons+=("source only") || skipped_reasons+=("no viable assets")
+            if [[ "$silent" == "false" ]]; then
+                printf "%-15s %-12s %-12s %-50s\n" "$binary_name" "source" "$apt_version" "-"
+            fi
             continue
+        fi
+
+        # Check dependencies
+        get_cache_paths "$repo_name"
+        if downloaded_asset=$(download_asset "$repo_name" "$asset_url"); then
+            if extract_package "$downloaded_asset" "$REPO_EXTRACTED_DIR"; then
+                if ! validate_binary "$REPO_EXTRACTED_DIR" >/dev/null; then
+                    [[ ${#MISSING_PACKAGES[@]} -gt 0 ]] && all_dependencies+=("${MISSING_PACKAGES[@]}")
+                fi
+            fi
         fi
 
         # Store repo info
@@ -988,50 +1016,48 @@ batch_install() {
 
     [[ ${#repo_list[@]} -eq 0 ]] && log "ERROR" "No valid repositories found in $repos_file" && return 1
 
+    # Display skipped repositories
     if [[ "$silent" == "false" && ${#skipped_repos[@]} -gt 0 ]]; then
         echo -e "\nSkipped repositories:"
         for i in "${!skipped_repos[@]}"; do
-            echo "  - ${skipped_repos[$i]} (${skipped_reasons[$i]})"
+            echo "        - ${skipped_repos[$i]} (${skipped_reasons[$i]})"
         done
     fi
 
-    # In silent mode, automatically choose GitHub installation
-    choice=1
-    if [[ "$silent" == "false" ]]; then
-        echo -e "\nInstallation options:"
-        echo "1. Install all GitHub versions (to $INSTALL_DIR)"
-        echo "2. Install all APT versions"
-        echo "3. Cancel"
-        read -rp "Select installation method [1-3]: " choice
+    # Display dependencies
+    echo -e "\nDependencies needed:"
+    if [[ ${#all_dependencies[@]} -gt 0 ]]; then
+        all_dependencies=($(printf "%s\n" "${all_dependencies[@]}" | sort -u))
+        echo "        The following packages are required:"
+        printf "        %s\n" "${all_dependencies[@]}"
+    else
+        echo "        No additional dependencies required"
     fi
 
-    case $choice in
-        1)
-            [[ "$silent" == "false" ]] && echo "Installing ${#repo_list[@]} packages from GitHub..."
-            [[ "$silent" == "false" ]] && echo
-            local success_count=0
-            for i in "${!repo_list[@]}"; do
-                if standalone_install "${repo_list[i]}" --silent; then
-                    ((success_count++))
-                else
-                    log quiet "ERROR" "Failed to install ${repo_list[i]}"
-                fi
-            done
-            
-            [[ "$silent" == "false" ]] && echo
-            [[ "$silent" == "false" ]] && echo "Installation complete: $success_count/$total_repos repository packages installed successfully"  ;;
-        2)
-            apt_install binary_names[@]
-            ;;
-        3)
-            [[ "$silent" == "false" ]] && echo "Installation cancelled."
-            return 0 
-            ;;
-        *)
-            echo "Invalid option. Exiting."
-            return 1
-            ;;
-    esac
+    # Confirm installation
+    if [[ "$silent" == "false" ]]; then
+        echo
+        read -p "Install all repos? [y/N] " -r response
+        [[ ! "$response" =~ ^[Yy]$ ]] && echo "Installation cancelled." && return 0
+    fi
+
+    # Perform installation
+    local success_count=0
+    for i in "${!repo_list[@]}"; do
+        if standalone_install "${repo_list[i]}" true; then
+            ((success_count++))
+        fi
+    done
+
+    if [[ "$silent" == "false" ]]; then
+        echo "Installation complete: $success_count/$total_repos repository packages installed successfully"
+        if [[ ${#all_dependencies[@]} -gt 0 ]]; then
+            echo "Please install missing dependencies using command:"
+            echo "    sudo apt install -y ${all_dependencies[*]}"
+        fi
+    fi
+
+    return 0
 }
 
 remove_package() {
