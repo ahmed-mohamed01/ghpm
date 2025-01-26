@@ -1301,13 +1301,20 @@ search_packages() {
 }
 
 main() {
-    local silent=false
+    
+    # Check dependencies
+    for dep in curl jq tar unzip; do
+        if ! command -v "$dep" >/dev/null 2>&1; then
+            echo "Error: Missing $dep. Please install it via your package manager."
+            return 1
+        fi
+    done
 
-    # Check for unattended flag first
-    if [[ "$1" == "-u" ]]; then
-        silent=true
-        shift
-    fi
+    # Clean old cache (>90 days)
+    [[ -d "$CACHE_DIR" ]] && find "$CACHE_DIR" -type f -mtime +90 -delete 2>/dev/null
+
+    local silent=false
+    [[ "$1" == "-u" ]] && silent=true && shift
 
     local cmd="$1"
     shift
