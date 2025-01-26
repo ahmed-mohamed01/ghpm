@@ -161,14 +161,14 @@ validate_input() {
         
         if [[ "${current_version#v}" == "${latest_version#v}" ]]; then
             [[ "$silent" == "false" ]] && echo "Package $actual_binary is already installed and up to date (version $current_version)" >&2
-            echo "${repo_name}:${actual_binary}:${latest_version#v}:installed,up-to-date"
+            # echo "${repo_name}:${actual_binary}:${latest_version#v}:installed,up-to-date"
             return 3 
         else
             [[ "$silent" == "false" ]] && {
                 echo "Note: $actual_binary is installed (version $current_version). Latest version is $latest_version" >&2
                 echo "Run $0 update $actual_binary to update"
             }
-            echo "${repo_name}:${actual_binary}:${latest_version#v}:installed,available"
+            # echo "${repo_name}:${actual_binary}:${latest_version#v}:installed,available"
             return 4
         fi
     fi
