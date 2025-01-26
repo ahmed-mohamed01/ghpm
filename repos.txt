@@ -2,17 +2,15 @@ ajeetdsouza/zoxide
 
 sharkdp/bat
 sharkdp/fd
-BurntSushi/ripgrep
+BurntSushi/ripgrep | rg
 junegunn/fzf
 eza-community/eza
 jesseduffield/lazygit
-# olh
-
-tldr-pages/tldr-c-client
+tldr-pages/tldr-c-client | tldr
 zyedidia/micro
 Schniz/fnm
 dalance/procs
-ClementTsang/bottom
+ClementTsang/bottom | btm
 dandavison/delta
 aristocratos/btop
 pemistahl/grex
