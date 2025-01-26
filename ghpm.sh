@@ -1,7 +1,7 @@
 #! /usr/bin/env bash
 
 set -uo pipefail      # set -e error handling, -u undefined variable protection -o pipefail piepline faulure catching. 
-DISPLAY_ISSUES=true # make log output visible. 
+DISPLAY_ISSUES=false # make log output visible. 
 
 # Configure folders
 DATA_DIR="${PWD}/.local/share/ghpm"
@@ -94,83 +94,87 @@ log() {
 }
 
 validate_input() {
-    local type="$1"    # 'repo' or 'binary'
-    local input="$2"
-    
-    case "$type" in
-        "repo")
-            # Check if input is empty
-            if [[ -z "$input" ]]; then
-                echo "Error: Missing repository name. Usage: ghpm install owner/repo" >&2
-                return 1
-            fi
+    local input="$1"
+    local silent="${2:-false}"
 
-            local repo_name binary_name
-            # Check and split on pipe if present
-            if [[ "$input" == *"|"* ]]; then
-                repo_name=$(echo "$input" | cut -d'|' -f1 | tr -d ' ')
-                binary_name=$(echo "$input" | cut -d'|' -f2 | tr -d ' ')
-                
-                if [[ -z "$binary_name" ]]; then
-                    echo "Error: Empty binary name after '|'" >&2
-                    return 1
-                fi
-            else
-                repo_name="$input"
-                binary_name=$(basename "$repo_name")
-            fi
+    # Check if input is empty
+    [[ -z "$input" ]] && [[ "$silent" == "false" ]] && echo "Error: Missing repository name. Usage: ghpm install owner/repo" >&2 && return 1
 
-            # Basic owner/repo format check
-            if [[ ! "$repo_name" =~ ^[^/]+/[^/]+$ ]]; then
-                echo "Error: Invalid repository format '$repo_name'" >&2
-                echo "Usage: ghpm install owner/repo" >&2
-                echo "Tip: If you're looking for a package, try: ghpm search <name>" >&2
-                return 1
-            fi
+    # Basic owner/repo format check
+    if [[ ! "$input" =~ ^[^/]+/[^/]+$ ]]; then
+        [[ "$silent" == "false" ]] && {
+            echo "Error: Invalid repository format '$input'" >&2
+            echo "Usage: ghpm install owner/repo" >&2
+            echo "Tip: If you're looking for a package, try: ghpm search <name>" >&2
+        }
+        return 1
+    fi
 
-            # Declare latest_version at the start
-            local latest_version=""
+    local repo_name binary_name
+    if [[ "$input" == *"|"* ]]; then
+        repo_name=$(echo "$input" | cut -d'|' -f1 | tr -d ' ')
+        binary_name=$(echo "$input" | cut -d'|' -f2 | tr -d ' ')
+        
+        if [[ -z "$binary_name" ]]; then
+            [[ "$silent" == "false" ]] && echo "Error: Empty binary name after '|'" >&2
+            return 1
+        fi
+    else
+        repo_name="$input"
+        binary_name=$(basename "$repo_name")
+    fi
 
-            # Check if already installed
-            local installed_info
-            if installed_info=$(db_ops get "$binary_name" 2>/dev/null); then
-                local current_version=$(echo "$installed_info" | jq -r '.version')
-                local github_data
-                github_data=$(query_github_api "$repo_name") || { handle_repo_error $? "$repo_name" || return $?; }
-                latest_version=$(echo "$github_data" | jq -r '.tag_name')
-                
-                if [[ "${current_version#v}" == "${latest_version#v}" ]]; then
-                    echo "Package $binary_name is already installed and up to date (version $current_version)" >&2
-                    return 3 
-                else
-                    echo "Note: $binary_name is installed (version $current_version). Latest version is $latest_version" >&2
-                    echo "Run $0 update $binary_name to update"
-                    return 1
-                fi
-            fi
-
-            # Get GitHub data to verify repo and get latest version
-            local github_data ret
-            github_data=$(query_github_api "$repo_name")
-            ret=$?
-            if [[ $ret -ne 0 ]]; then
+    # Check if installed
+    local latest_version="" installed_info
+    if installed_info=$(db_ops get "$binary_name" 2>/dev/null); then
+        local current_version=$(echo "$installed_info" | jq -r '.version')
+        local github_data
+        github_data=$(query_github_api "$repo_name")
+        ret=$?
+        if [[ $ret -ne 0 ]]; then
+            [[ "$silent" == "false" ]] && {
                 if [[ $ret -eq 2 ]]; then
                     echo "Error: Repository $repo_name not found. Please check the repository name and try again." >&2
-                    exit 2
                 else 
                     echo "Error: Failed to access GitHub API. Please check your connection and try again." >&2
-                    exit 1
                 fi
-            fi
+            }
+            return $ret
+        fi
+        latest_version=$(echo "$github_data" | jq -r '.tag_name')
+        
+        if [[ "${current_version#v}" == "${latest_version#v}" ]]; then
+            [[ "$silent" == "false" ]] && echo "Package $binary_name is already installed and up to date (version $current_version)" >&2
+            echo "${repo_name}:${binary_name}:${latest_version#v}:installed,up-to-date"
+            return 3 
+        else
+            [[ "$silent" == "false" ]] && {
+                echo "Note: $binary_name is installed (version $current_version). Latest version is $latest_version" >&2
+                echo "Run $0 update $binary_name to update"
+            }
+            echo "${repo_name}:${binary_name}:${latest_version#v}:installed,available"
+            return 4
+        fi
+    fi
 
-            echo "${repo_name}:${binary_name}:${latest_version}"
-            ;;
-            
-    esac
-    
+    # Get GitHub data to verify repo and get latest version
+    local github_data ret
+    github_data=$(query_github_api "$repo_name")
+    ret=$?
+    if [[ $ret -ne 0 ]]; then
+        [[ "$silent" == "false" ]] && {
+            if [[ $ret -eq 2 ]]; then
+                echo "Error: Repository $repo_name not found. Please check the repository name and try again." >&2
+            else 
+                echo "Error: Failed to access GitHub API. Please check your connection and try again." >&2
+            fi
+        }
+        return $ret
+    fi
+    latest_version=$(echo "$github_data" | jq -r '.tag_name')
+
+    echo "${repo_name}:${binary_name}:${latest_version#v}"
     return 0
-    # return 2 if not found
-    # return 3 if installed and up to date
 }
 
 # this will accept a repo name, and fetch api input with a local cache validation. 
@@ -330,7 +334,7 @@ process_asset_data() {
             [[ "$name" =~ [Ll]inux ]] && ((score+=10 )) && reason+="contains -linux (+10); "      
             [[ "$name" =~ [uU]nknown[-_.][Ll]inux ]] && ((score+=20)) && reason+="unknown-linux (+20); "     
 
-            [[ "$system_arch" =~ (x86_64|amd64) && "$name" =~ (x86[-_.]64|amd64) ]] && ((score+=30)) && reason+="x64 architecture (+30); "       
+            [[ "$system_arch" =~ (x86_64|amd64) && "$name" =~ (x86[-_ ]64|amd64) ]] && ((score+=30)) && reason+="x64 architecture (+30); "       
             [[ "$system_arch" =~ (aarch64|arm64) && "$name" =~ (aarch64|arm64) ]] && ((score+=30)) && reason+="arm64 architecture (+30); "       
             [[ "$bit_arch" =~ 32 && "$name" =~ [Ll]inux32 ]] && ((score+=10)) && reason+="linux32 on 32bit architecture (+10); "        
             [[ "$bit_arch" =~ 64 && "$name" =~ [Ll]inux64 ]] && ((score+=10)) && reason+="linux64 on 64bit architecture (+10); "        
@@ -791,6 +795,14 @@ db_ops() {
             # If it exists, output the value
             jq --arg name "$binary_name" '.[$name]' "$DB_FILE"
             ;;
+        "get_version")
+            # Check if the key exists first
+            if ! jq -e --arg name "$binary_name" 'has($name)' "$DB_FILE" >/dev/null; then
+                return 1
+            fi
+            # If it exists, output the value
+            jq -r --arg name "$binary_name" '.[$name].version' "$DB_FILE"
+            ;;
     esac
 }
 
@@ -844,7 +856,7 @@ standalone_install() {
     local silent=${2:-false}
 
     local repo_name binary_name latest_version
-    if ! validation_output=$(validate_input repo "$repo_name"); then
+    if ! validation_output=$(validate_input "$repo_name"); then
         [[ "$silent" == "false" ]] && echo "$validation_output" >&2
         return 1
     fi
@@ -925,54 +937,79 @@ batch_install() {
     
     [[ ! -f "$repos_file" ]] && log "ERROR" "Repositories file '$repos_file' not found." && return 1
 
+    # Count valid repositories
+    local total_repos=0
+    while IFS= read -r line; do
+        [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
+        ((total_repos++))
+    done < "$repos_file"
+
+    # Setup display
     if [[ "$silent" == "false" ]]; then
-        echo "Processing repositories from $repos_file:"
+        echo "Processing ($total_repos) repositories from $repos_file:"
         echo
         printf "%-15s %-12s %-12s %-50s\n" "Binary" "Github" "APT" "Asset"
         echo "------------------------------------------------------------------------------------------------"
     fi
 
     # Initialize arrays
-    local repo_list=() binary_names=() gh_versions=() apt_versions=() assets=() total_repos=()
+    local repo_list=() binary_names=() gh_versions=() apt_versions=() assets=() asset_status=()
     local skipped_repos=() skipped_reasons=()
     local valid_packages=0
 
     while IFS= read -r line; do
         [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
-        ((total_repos++))
         
-        local repo_name binary_name
-        if [[ "$line" == *"|"* ]]; then
-            IFS='|' read -r repo_name binary_name <<< "$line"
-            repo_name=$(echo "$repo_name" | xargs)
-            binary_name=$(echo "$binary_name" | xargs)
-        else
-            repo_name=$(echo "$line" | xargs)
-            binary_name=$(echo "$repo_name" | cut -d'/' -f2)
-        fi
+        local repo_name binary_name latest_version current_version
         
-        # Process repository
-        local gh_response processed_data
-        if ! gh_response=$(query_github_api "$repo_name"); then
-            skipped_repos+=("$repo_name")
-            skipped_reasons+=("API error")
+        # Validate repository format
+        validation_output=$(validate_input "$line" true)
+        ret=$?
+        
+        case $ret in
+            0) # Not installed, proceed with installation
+                IFS=':' read -r repo_name binary_name latest_version <<< "$validation_output"
+                ;;
+            1|2) # Error or repo not found
+                continue
+                ;;
+            3) # Installed and up to date
+                IFS=':' read -r repo_name binary_name latest_version status <<< "$validation_output"
+                skipped_repos+=("$repo_name")
+                skipped_reasons+=("installed and up to date")
+                continue
+                ;;
+            4) # Installed but update available
+                IFS=':' read -r repo_name binary_name latest_version status <<< "$validation_output"
+                current_version=$(db_ops "get_version" "$binary_name")
+                skipped_repos+=("$repo_name")
+                skipped_reasons+=("installed, update available")
+                # Add to installation list since update is available
+                ((valid_packages++))
+                binary_names+=("$binary_name")
+                repo_list+=("$repo_name")
+                gh_versions+=("${latest_version}*")
+                continue
+                ;;
+            *)
+                continue
+                ;;
+        esac
+        
+        # Process repository data
+        gh_response=$(query_github_api "$repo_name")
+        if [[ $? -ne 0 ]]; then
             continue
         fi
         
-        if ! processed_data=$(process_asset_data "$gh_response"); then
-            skipped_repos+=("$repo_name")
-            skipped_reasons+=("processing error")
+        processed_data=$(process_asset_data "$gh_response")
+        if [[ $? -ne 0 ]]; then
             continue
         fi
+        
+        read -r gh_version chosen_asset has_source asset_url < <(echo "$processed_data" | jq -r '[.version, (.chosen_asset.name // "null"), .has_source_files, (.chosen_asset.url // "null")] | @tsv')
 
-        # Extract version and asset info
-        local gh_version chosen_asset has_source asset_url
-        gh_version=$(echo "$processed_data" | jq -r '.version')
-        chosen_asset=$(echo "$processed_data" | jq -r '.chosen_asset.name')
-        has_source=$(echo "$processed_data" | jq -r '.has_source_files')
-        asset_url=$(echo "$processed_data" | jq -r '.chosen_asset.url')
-
-        # Check APT version
+        # Get APT version
         local apt_version="not found"
         if command -v apt-cache >/dev/null 2>&1; then
             apt_version=$(apt-cache policy "$binary_name" 2>/dev/null | 
@@ -981,85 +1018,84 @@ batch_install() {
             [[ -z "$apt_version" || "$apt_version" == "none" ]] && apt_version="not found"
         fi
 
-        # Handle source-only or no viable assets
-        if [[ "$chosen_asset" == "null" || -z "$chosen_asset" ]]; then
+        # Handle no viable assets
+        if [[ "$chosen_asset" == "null" ]]; then
             skipped_repos+=("$repo_name")
             [[ "$has_source" == "true" ]] && skipped_reasons+=("source only") || skipped_reasons+=("no viable assets")
-            if [[ "$silent" == "false" ]]; then
-                printf "%-15s %-12s %-12s %-50s\n" "$binary_name" "source" "$apt_version" "-"
-            fi
+            [[ "$silent" == "false" ]] && printf "%-15s %-12s %-12s %-50s\n" "$binary_name" "source" "$apt_version" "-"
             continue
         fi
 
-        # Check dependencies
-        get_cache_paths "$repo_name"
-        if downloaded_asset=$(download_asset "$repo_name" "$asset_url"); then
-            if extract_package "$downloaded_asset" "$REPO_EXTRACTED_DIR"; then
-                if ! validate_binary "$REPO_EXTRACTED_DIR" >/dev/null; then
-                    [[ ${#MISSING_PACKAGES[@]} -gt 0 ]] && all_dependencies+=("${MISSING_PACKAGES[@]}")
-                fi
-            fi
-        fi
-
-        # Store repo info
+        # Store valid package info
         ((valid_packages++))
         binary_names+=("$binary_name")
         repo_list+=("$repo_name")
         gh_versions+=("$gh_version")
         apt_versions+=("$apt_version")
         assets+=("$chosen_asset")
-
-        if [[ "$silent" == "false" ]]; then
-            printf "%-15s %-12s %-12s %-50s\n" "$binary_name" "$gh_version" "$apt_version" "$chosen_asset"
-        fi
+        [[ "$silent" == "false" ]] && printf "%-15s %-12s %-12s %-50s\n" "$binary_name" "$gh_version" "$apt_version" "$chosen_asset"
     done < "$repos_file"
 
     [[ ${#repo_list[@]} -eq 0 ]] && log "ERROR" "No valid repositories found in $repos_file" && return 1
 
-    # Display skipped repositories
+    # Display skipped repos and update notice
     if [[ "$silent" == "false" && ${#skipped_repos[@]} -gt 0 ]]; then
         echo -e "\nSkipped repositories:"
+        local needs_update=false
+        local update_repos=()
         for i in "${!skipped_repos[@]}"; do
             echo "        - ${skipped_repos[$i]} (${skipped_reasons[$i]})"
+            if [[ "${skipped_reasons[$i]}" == *"installed"* && "${skipped_reasons[$i]}" != *"up to date"* ]]; then
+                needs_update=true
+                update_repos+=("${skipped_repos[$i]}")
+            fi
         done
+        
+        if [[ "$needs_update" == "true" ]]; then
+            echo -e "\nTo update installed packages, run:"
+            for repo in "${update_repos[@]}"; do
+                echo "    ghpm update ${repo##*/}"
+            done
+        fi
+
+        echo -e "\nDependencies needed:"
+        if [[ ${#all_dependencies[@]} -gt 0 ]]; then
+            all_dependencies=($(printf "%s\n" "${all_dependencies[@]}" | sort -u))
+            printf "        %s\n" "${all_dependencies[@]}"
+        else
+            echo "        No additional dependencies required"
+        fi
+
+        if [[ ${#repo_list[@]} -gt 0 ]]; then
+            echo
+            read -p "Install all repos? [y/Y] " -r response
+            [[ ! "$response" =~ ^[Yy]$ ]] && echo "Installation cancelled." && return 0
+        fi
     fi
 
-    # Display dependencies
-    echo -e "\nDependencies needed:"
-    if [[ ${#all_dependencies[@]} -gt 0 ]]; then
-        all_dependencies=($(printf "%s\n" "${all_dependencies[@]}" | sort -u))
-        echo "        The following packages are required:"
-        printf "        %s\n" "${all_dependencies[@]}"
-    else
-        echo "        No additional dependencies required"
-    fi
-
-    # Confirm installation
-    if [[ "$silent" == "false" ]]; then
-        echo
-        read -p "Install all repos? [y/N] " -r response
-        [[ ! "$response" =~ ^[Yy]$ ]] && echo "Installation cancelled." && return 0
-    fi
-
-    # Perform installation
+    # Install packages
     local success_count=0
     for i in "${!repo_list[@]}"; do
         if standalone_install "${repo_list[i]}" true; then
             ((success_count++))
+            echo "Installed ${repo_list[i]} successfully"
+        else
+            echo "Failed to install ${repo_list[i]}"
         fi
     done
 
     if [[ "$silent" == "false" ]]; then
-        echo "Installation complete: $success_count/$total_repos repository packages installed successfully"
+        local skipped_count=$((${#skipped_repos[@]} - valid_packages))
+        echo -e "\nInstallation complete: $success_count/$valid_packages repository packages installed successfully. $skipped_count repos skipped."
+        
         if [[ ${#all_dependencies[@]} -gt 0 ]]; then
-            echo "Please install missing dependencies using command:"
+            echo -e "\nPlease install missing dependencies using command:"
             echo "    sudo apt install -y ${all_dependencies[*]}"
         fi
     fi
 
     return 0
 }
-
 remove_package() {
     local binary_name="$1"
     local silent_mode="${2:-false}"
@@ -1193,7 +1229,7 @@ update_package() {
         # Compare versions (strip v prefix for proper comparison)
         local curr_ver="${current_version#v}"
         local latest_ver="${latest_version#v}"
-        printf "        %-12s %-10s %-10s %-50s\n" "$pkg" "$current_version" "$latest_version" "$asset_name"
+        printf "        %-12s %-10s %-10s %-50s\n" "$pkg" "v${current_version#v}" "v${latest_version#v}" "$asset_name"
         
         if [[ "$(echo -e "$curr_ver\n$latest_ver" | sort -V | tail -n1)" != "$curr_ver" ]]; then
             updates_available=true
@@ -1215,7 +1251,7 @@ update_package() {
         echo "Update found:"
         for pkg in "${!update_info[@]}"; do
             IFS='|' read -r repo_name current_version new_version asset_name <<< "${update_info[$pkg]}"
-            echo "        $pkg $current_version --> $new_version"
+            echo "        $pkg v${current_version#v} --> v${new_version#v}"
         done
         echo
         echo -n "Proceed? [y/N] "
@@ -1225,7 +1261,7 @@ update_package() {
         echo "Updates found:"
         for pkg in "${!update_info[@]}"; do
             IFS='|' read -r repo_name current_version new_version asset_name <<< "${update_info[$pkg]}"
-            echo "        $pkg $current_version --> $new_version"
+            echo "        $pkg v${current_version#v} --> v${new_version#v}"
         done
         echo
         echo -n "Proceed with all updates? [y/N] "
@@ -1242,7 +1278,7 @@ update_package() {
     for pkg in "${!update_info[@]}"; do
         IFS='|' read -r repo_name current_version new_version asset_name <<< "${update_info[$pkg]}"
         
-        echo -n " Updating $pkg to $new_version..."
+        echo -n " Updating $pkg to v${new_version#v}..."
         echo -n " Removing old version..."
         if ! remove_package "$pkg" --silent; then
             echo " Failed!"
@@ -1250,7 +1286,7 @@ update_package() {
             continue
         fi
         
-        echo -n " Installing $pkg $new_version to $INSTALL_DIR..."
+        echo -n " Installing $pkg v${new_version#v} to $INSTALL_DIR..."
         if ! standalone_install "$repo_name" --silent; then
             echo " Failed!"
             log "ERROR" "Failed to install new version of $pkg"
