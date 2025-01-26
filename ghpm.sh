@@ -528,8 +528,10 @@ validate_binary() {
             return 1
         fi
         # Collect dependencies
-        dependencies=($(ldd "$binary_path" | awk '/=>/ {print $3}' | sort -u))
-        export DEPENDENCIES=("${dependencies[@]}")
+        dependencies=($(ldd "$binary_path" | awk '/=>/ {print $3}' | xargs -n1 basename | sort -u))
+        if [[ ${#dependencies[@]} -gt 0 ]]; then
+            log quiet "INFO" "Binary [$binary_name] has dependencies: ${dependencies[*]}"
+        fi
     else
         log quiet "INFO" "Binary $binary_name is statically linked or does not require dynamic dependencies."
     fi
