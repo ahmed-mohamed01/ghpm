@@ -1342,7 +1342,7 @@ main() {
             echo "Purging cache.."
             echo "Cache claered"
             echo 
-            [[ "$1" -ne 1 ]] && log quiet "INFO" "Cache dir removed";;
+            [[ "$?" -ne 1 ]] && log quiet "INFO" "Cache cleared";;
  
         "--file")
             local repos_file="$1"
@@ -1352,7 +1352,7 @@ main() {
             db_ops list ;;
 
         "--version")
-            echo "0.2.7" ;;
+            echo "0.0.7" ;;
 
         *)
             echo "GitHub Package Manager - a script to download and manage precompiled binaries from Github"
