@@ -161,14 +161,14 @@ validate_input() {
         
         if [[ "${current_version#v}" == "${latest_version#v}" ]]; then
             [[ "$silent" == "false" ]] && echo "Package $actual_binary is already installed and up to date (version $current_version)" >&2
-            # echo "${repo_name}:${actual_binary}:${latest_version#v}:installed,up-to-date"
+            echo "${repo_name}:${actual_binary}:${latest_version#v}:installed,up-to-date"
             return 3 
         else
             [[ "$silent" == "false" ]] && {
                 echo "Note: $actual_binary is installed (version $current_version). Latest version is $latest_version" >&2
                 echo "Run $0 update $actual_binary to update"
             }
-            # echo "${repo_name}:${actual_binary}:${latest_version#v}:installed,available"
+            echo "${repo_name}:${actual_binary}:${latest_version#v}:installed,available"
             return 4
         fi
     fi
@@ -1007,7 +1007,11 @@ batch_install() {
     # Count valid repositories
     local total_repos=0
     while IFS= read -r line; do
+        # Skip empty lines and full comment lines
         [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
+        # Remove inline comments
+        line=$(echo "$line" | sed 's/[[:space:]]*#.*$//')
+        [[ -z "$line" ]] && continue
         ((total_repos++))
     done < "$repos_file"
 
@@ -1015,7 +1019,7 @@ batch_install() {
     if [[ "$silent" == "false" ]]; then
         echo "Processing ($total_repos) repositories from $repos_file:"
         echo
-        printf "%-15s %-12s %-12s %-50s\n" "Binary" "Github" "APT" "Asset"
+        printf "%-15s %-12s %-12s %-50s\n" "Binary" "Github" "APT" "Asset/Notes"
         echo "------------------------------------------------------------------------------------------------"
     fi
 
@@ -1025,7 +1029,11 @@ batch_install() {
     local valid_packages=0
 
     while IFS= read -r line; do
+        # Skip empty lines and full comment lines
         [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
+        # Remove inline comments
+        line=$(echo "$line" | sed 's/[[:space:]]*#.*$//')
+        [[ -z "$line" ]] && continue
         
         local repo_name binary_name latest_version current_version
         
@@ -1042,20 +1050,34 @@ batch_install() {
                 ;;
             3) # Installed and up to date
                 IFS=':' read -r repo_name binary_name latest_version status <<< "$validation_output"
+                current_version=$(db_ops "get_version" "$binary_name")
+                # Get APT version
+                local apt_version="not found"
+                if command -v apt-cache >/dev/null 2>&1; then
+                    apt_version=$(apt-cache policy "$binary_name" 2>/dev/null | 
+                                grep 'Candidate:' | 
+                                sed -E 's/.*Candidate: //; s/-[^-]*ubuntu[^-]*//; s/-$//; s/[^0-9.].*//; s/^/v/')
+                    [[ -z "$apt_version" || "$apt_version" == "none" ]] && apt_version="not found"
+                fi
                 skipped_repos+=("$repo_name")
                 skipped_reasons+=("installed and up to date")
+                [[ "$silent" == "false" ]] && printf "%-15s %-12s %-12s %-50s\n" "$binary_name" "$current_version" "$apt_version" "skipped: installed, up to date"
                 continue
                 ;;
             4) # Installed but update available
                 IFS=':' read -r repo_name binary_name latest_version status <<< "$validation_output"
                 current_version=$(db_ops "get_version" "$binary_name")
+                # Get APT version
+                local apt_version="not found"
+                if command -v apt-cache >/dev/null 2>&1; then
+                    apt_version=$(apt-cache policy "$binary_name" 2>/dev/null | 
+                                grep 'Candidate:' | 
+                                sed -E 's/.*Candidate: //; s/-[^-]*ubuntu[^-]*//; s/-$//; s/[^0-9.].*//; s/^/v/')
+                    [[ -z "$apt_version" || "$apt_version" == "none" ]] && apt_version="not found"
+                fi
                 skipped_repos+=("$repo_name")
                 skipped_reasons+=("installed, update available")
-                # Add to installation list since update is available
-                ((valid_packages++))
-                binary_names+=("$binary_name")
-                repo_list+=("$repo_name")
-                gh_versions+=("${latest_version}*")
+                [[ "$silent" == "false" ]] && printf "%-15s %-12s %-12s %-50s\n" "$binary_name" "${latest_version}*" "$apt_version" "skipped: installed, update available"
                 continue
                 ;;
             *)
@@ -1084,12 +1106,12 @@ batch_install() {
                          sed -E 's/.*Candidate: //; s/-[^-]*ubuntu[^-]*//; s/-$//; s/[^0-9.].*//; s/^/v/')
             [[ -z "$apt_version" || "$apt_version" == "none" ]] && apt_version="not found"
         fi
-
+        
         # Handle no viable assets
         if [[ "$chosen_asset" == "null" ]]; then
             skipped_repos+=("$repo_name")
             [[ "$has_source" == "true" ]] && skipped_reasons+=("source only") || skipped_reasons+=("no viable assets")
-            [[ "$silent" == "false" ]] && printf "%-15s %-12s %-12s %-50s\n" "$binary_name" "source" "$apt_version" "-"
+            [[ "$silent" == "false" ]] && printf "%-15s %-12s %-12s %-50s\n" "$binary_name" "source" "$apt_version" "skipped: source only"
             continue
         fi
 
@@ -1103,7 +1125,33 @@ batch_install() {
         [[ "$silent" == "false" ]] && printf "%-15s %-12s %-12s %-50s\n" "$binary_name" "$gh_version" "$apt_version" "$chosen_asset"
     done < "$repos_file"
 
-    [[ ${#repo_list[@]} -eq 0 ]] && log "ERROR" "No valid repositories found in $repos_file" && return 1
+    # Check if we have any repos to install
+    if [[ ${#repo_list[@]} -eq 0 ]]; then
+        # Display skipped repos first
+        if [[ "$silent" == "false" && ${#skipped_repos[@]} -gt 0 ]]; then
+            echo -e "\nSkipped repositories:"
+            local needs_update=false
+            local update_repos=()
+            for i in "${!skipped_repos[@]}"; do
+                echo "        - ${skipped_repos[$i]} (${skipped_reasons[$i]})"
+                if [[ "${skipped_reasons[$i]}" == *"installed"* && "${skipped_reasons[$i]}" != *"up to date"* ]]; then
+                    needs_update=true
+                    update_repos+=("${skipped_repos[$i]}")
+                fi
+            done
+            
+            if [[ "$needs_update" == "true" ]]; then
+                echo -e "\nTo update installed packages, run:"
+                for repo in "${update_repos[@]}"; do
+                    echo "    ghpm update ${repo##*/}"
+                done
+            fi
+        fi
+        
+        # Show the no repositories message in yellow at the end
+        echo -e "\n${YELLOW}No repositories to install - all packages are either installed, skipped, or source only.${NC}"
+        return 0
+    fi
 
     # Display skipped repos and update notice
     if [[ "$silent" == "false" && ${#skipped_repos[@]} -gt 0 ]]; then
@@ -1125,7 +1173,8 @@ batch_install() {
             done
         fi
 
-        echo -e "\nDependencies needed:"
+        echo
+        echo "Dependencies needed:"
         if [[ ${#all_dependencies[@]} -gt 0 ]]; then
             all_dependencies=($(printf "%s\n" "${all_dependencies[@]}" | sort -u))
             printf "        %s\n" "${all_dependencies[@]}"

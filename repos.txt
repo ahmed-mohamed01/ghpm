@@ -1,9 +1,9 @@
-ajeetdsouza/zoxide
+ajeetdsouza/zoxide          # cd replacement
 
-sharkdp/bat
-sharkdp/fd
-BurntSushi/ripgrep | rg
-junegunn/fzf
+sharkdp/bat                 # a better cat replacement with syntax highlighting
+sharkdp/fd                  # a better find replacement, faster and easier syntax
+BurntSushi/ripgrep | rg     # grep replacement
+junegunn/fzf                # fuzzy finder with lots of bells and whistles
 eza-community/eza
 jesseduffield/lazygit
 tldr-pages/tldr-c-client | tldr
