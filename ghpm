@@ -124,10 +124,26 @@ validate_input() {
         binary_name=$(basename "$repo_name")
     fi
 
-    # Check if installed
+    # Check if installed - try both binary name and repo basename
     local latest_version="" installed_info
-    if installed_info=$(db_ops get "$binary_name" 2>/dev/null); then
-        local current_version=$(echo "$installed_info" | jq -r '.version')
+    local db_lookup_result=0
+    installed_info=$(db_ops get "$binary_name" 2>/dev/null) || db_lookup_result=$?
+    
+    if [[ $db_lookup_result -ne 0 ]]; then
+        # Try looking up by repo basename if binary name lookup failed
+        installed_info=$(db_ops get "$(basename "$repo_name")" 2>/dev/null) || db_lookup_result=$?
+    fi
+
+    if [[ $db_lookup_result -eq 0 && -n "$installed_info" ]]; then
+        local current_version=$(echo "$installed_info" | jq -r '.version // empty')
+        local actual_binary=$(echo "$installed_info" | jq -r '.installed_files[] | select(.type == "binary") | .name' | head -n1)
+        
+        # Skip if we couldn't get version or binary name
+        if [[ -z "$current_version" || -z "$actual_binary" ]]; then
+            log "ERROR" "Invalid database entry for $binary_name"
+            return 1
+        fi
+
         local github_data
         github_data=$(query_github_api "$repo_name")
         ret=$?
@@ -144,15 +160,15 @@ validate_input() {
         latest_version=$(echo "$github_data" | jq -r '.tag_name')
         
         if [[ "${current_version#v}" == "${latest_version#v}" ]]; then
-            [[ "$silent" == "false" ]] && echo "Package $binary_name is already installed and up to date (version $current_version)" >&2
-            echo "${repo_name}:${binary_name}:${latest_version#v}:installed,up-to-date"
+            [[ "$silent" == "false" ]] && echo "Package $actual_binary is already installed and up to date (version $current_version)" >&2
+            echo "${repo_name}:${actual_binary}:${latest_version#v}:installed,up-to-date"
             return 3 
         else
             [[ "$silent" == "false" ]] && {
-                echo "Note: $binary_name is installed (version $current_version). Latest version is $latest_version" >&2
-                echo "Run $0 update $binary_name to update"
+                echo "Note: $actual_binary is installed (version $current_version). Latest version is $latest_version" >&2
+                echo "Run $0 update $actual_binary to update"
             }
-            echo "${repo_name}:${binary_name}:${latest_version#v}:installed,available"
+            echo "${repo_name}:${actual_binary}:${latest_version#v}:installed,available"
             return 4
         fi
     fi
@@ -588,7 +604,7 @@ prep_install_files() {
     local man_url="$3" 
     local completions_url="$4"
     local -n return_sorted_files=$5
-    local -n return_install_map=$6
+    declare -n return_install_map=$6
 
     rm -rf "$REPO_EXTRACTED_DIR"
     mkdir -p "$REPO_EXTRACTED_DIR"
@@ -700,15 +716,22 @@ db_ops() {
             
             local ghpm_id=$(uuidgen 2>/dev/null || date +%s%N)
             local current_time=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+            local repo_basename=$(basename "$repo_name")
 
             # Convert install_files to JSON
             local files_json="["
             local first=true
+            local primary_binary=""
             
             for key in "${!types_ref[@]}"; do
                 [[ "$first" = true ]] || files_json+=","
                 first=false
                 local base_type=$(echo "$key" | sed 's/_[0-9]\+$//')
+                
+                # Store the first binary we find as primary
+                if [[ "$base_type" == "binary" && -z "$primary_binary" ]]; then
+                    primary_binary=$(basename "${types_ref[$key]}")
+                fi
                 
                 files_json+=$(jq -n \
                     --arg name "$(basename "${types_ref[$key]}")" \
@@ -718,25 +741,77 @@ db_ops() {
             done
             files_json+="]"
 
+            # Create aliases array if binary name differs from repo basename
+            local aliases_json="[]"
+            if [[ "$repo_basename" != "$primary_binary" ]]; then
+                aliases_json="[\"$repo_basename\"]"
+            fi
+
             if ! jq --arg name "$binary_name" \
                    --arg repo "$repo_name" \
                    --arg id "$ghpm_id" \
                    --arg ver "$version" \
-                   --arg time "$current_time" \
                    --argjson files "$files_json" \
+                   --argjson aliases "$aliases_json" \
                    '.[$name] = {
                        repo: $repo,
                        ghpm_id: $id,
                        version: $ver,
                        installed_date: $time,
                        last_updated: $time,
-                       installed_files: $files
+                       installed_files: $files,
+                       aliases: $aliases
                    }' "$DB_FILE" > "${DB_FILE}.tmp"; then
                 log "ERROR" "Failed to update database file"
                 rm -f "${DB_FILE}.tmp"
                 return 1
             fi
             mv "${DB_FILE}.tmp" "$DB_FILE"
+            ;;
+            
+        "get")
+            # First try direct match
+            if jq -e --arg name "$binary_name" 'has($name)' "$DB_FILE" >/dev/null 2>&1; then
+                local pkg_data
+                pkg_data=$(jq --arg name "$binary_name" '.[$name]' "$DB_FILE")
+                if [[ -n "$pkg_data" && "$pkg_data" != "null" ]]; then
+                    echo "$pkg_data"
+                    return 0
+                fi
+            fi
+            
+            # Then try alias match - more robust version
+            local alias_match
+            alias_match=$(jq -r --arg alias "$binary_name" '
+                to_entries[] | 
+                select(.value != null and 
+                       .value.aliases != null and 
+                       (.value.aliases | type == "array") and
+                       (.value.aliases | index($alias) != null)
+                ) | 
+                .key' "$DB_FILE" 2>/dev/null)
+            
+            if [[ -n "$alias_match" && "$alias_match" != "null" ]]; then
+                jq --arg name "$alias_match" '.[$name]' "$DB_FILE"
+                return 0
+            fi
+            
+            # Try basename match for backward compatibility
+            local basename_match
+            basename_match=$(jq -r --arg name "$binary_name" '
+                to_entries[] |
+                select(.value != null and 
+                       .value.repo != null and
+                       ((.value.repo | split("/") | last) == $name)
+                ) |
+                .key' "$DB_FILE" 2>/dev/null)
+            
+            if [[ -n "$basename_match" && "$basename_match" != "null" ]]; then
+                jq --arg name "$basename_match" '.[$name]' "$DB_FILE"
+                return 0
+            fi
+            
+            return 1
             ;;
             
         "remove")
@@ -787,14 +862,6 @@ db_ops() {
             done
             ;;
             
-        "get")
-            # Check if the key exists first
-            if ! jq -e --arg name "$binary_name" 'has($name)' "$DB_FILE" >/dev/null; then
-                return 1
-            fi
-            # If it exists, output the value
-            jq --arg name "$binary_name" '.[$name]' "$DB_FILE"
-            ;;
         "get_version")
             # Check if the key exists first
             if ! jq -e --arg name "$binary_name" 'has($name)' "$DB_FILE" >/dev/null; then
@@ -1181,125 +1248,84 @@ remove_package() {
 }
 
 update_package() {
-    local package_name="${1:-all}"
-    local -a packages_to_update=()
-    
-    if [[ "$package_name" == "all" || "$package_name" == "" ]]; then
-        if ! all_packages=$(jq -r 'keys[]' "$DB_FILE"); then
-            echo " No packages installed via GHPM."
-            return 0
+    local binary_name="$1"
+    local silent="${2:-false}"
+
+    # Get package info from database
+    local package_info
+    local db_lookup_result=0
+    package_info=$(db_ops get "$binary_name" 2>/dev/null) || db_lookup_result=$?
+
+    if [[ $db_lookup_result -ne 0 || -z "$package_info" ]]; then
+        # Try looking up by repo basename if binary name lookup failed
+        local repo_basename
+        repo_basename=$(basename "$binary_name")
+        if [[ "$repo_basename" != "$binary_name" ]]; then
+            package_info=$(db_ops get "$repo_basename" 2>/dev/null) || db_lookup_result=$?
         fi
-        readarray -t packages_to_update <<< "$all_packages"
-    else
-        # Check if package exists and is managed by ghpm
-        if ! package_info=$(db_ops get "$package_name"); then
-            echo "Error: $package_name is not installed"
+        
+        if [[ $db_lookup_result -ne 0 || -z "$package_info" ]]; then
+            [[ "$silent" == "false" ]] && echo "Error: $binary_name is not installed" >&2
             return 1
         fi
-        packages_to_update=("$package_name")
     fi
 
-    # Only continue if we have packages to update
-    [[ ${#packages_to_update[@]} -eq 0 ]] && return 0
+    # Validate package info structure
+    if ! echo "$package_info" | jq -e 'has("repo") and has("version") and has("installed_files")' >/dev/null; then
+        [[ "$silent" == "false" ]] && echo "Error: Invalid database entry for $binary_name" >&2
+        return 1
+    fi
 
-    echo "Checking for updates ..."
-    echo
-    printf "        %-12s %-10s %-10s %-50s\n" "Package" "Current" "Latest" "Release asset"
-    echo "        --------------------------------------------------------------------------------"
-    
-    local updates_available=false
-    declare -A update_info
-    
-    for pkg in "${packages_to_update[@]}"; do
-        local pkg_info current_version latest_version asset_name
-        
-        # Get installed package info
-        pkg_info=$(db_ops get "$pkg")
-        current_version=$(echo "$pkg_info" | jq -r '.version')
-        repo_name=$(echo "$pkg_info" | jq -r '.repo')
-        
-        # Get latest version from GitHub
-        local github_response processed_data
-        github_response=$(query_github_api "$repo_name")
-        processed_data=$(process_asset_data "$github_response")
-        
-        latest_version=$(echo "$processed_data" | jq -r '.version')
-        asset_name=$(echo "$processed_data" | jq -r '.chosen_asset.name')
-        
-        # Compare versions (strip v prefix for proper comparison)
-        local curr_ver="${current_version#v}"
-        local latest_ver="${latest_version#v}"
-        printf "        %-12s %-10s %-10s %-50s\n" "$pkg" "v${current_version#v}" "v${latest_version#v}" "$asset_name"
-        
-        if [[ "$(echo -e "$curr_ver\n$latest_ver" | sort -V | tail -n1)" != "$curr_ver" ]]; then
-            updates_available=true
-            update_info["$pkg"]="$repo_name|$current_version|$latest_version|$asset_name"
-        fi
-    done
-    echo
-    if ! $updates_available; then
-        if [[ ${#packages_to_update[@]} -eq 1 ]]; then
-            echo "        ${packages_to_update[0]} is up to date!"
-        else
-            echo "        All packages are up to date!"
-        fi
+    local repo_name=$(echo "$package_info" | jq -r '.repo')
+    local current_version=$(echo "$package_info" | jq -r '.version')
+    local actual_binary=$(echo "$package_info" | jq -r '.installed_files[] | select(.type == "binary") | .name' | head -n1)
+
+    # Skip if we couldn't get required info
+    if [[ -z "$repo_name" || -z "$current_version" || -z "$actual_binary" ]]; then
+        [[ "$silent" == "false" ]] && echo "Error: Invalid database entry for $binary_name" >&2
+        return 1
+    fi
+
+    # Get latest version from GitHub
+    local github_data latest_version
+    github_data=$(query_github_api "$repo_name")
+    ret=$?
+    if [[ $ret -ne 0 ]]; then
+        [[ "$silent" == "false" ]] && {
+            if [[ $ret -eq 2 ]]; then
+                echo "Error: Repository $repo_name not found. Please check the repository name and try again." >&2
+            else 
+                echo "Error: Failed to access GitHub API. Please check your connection and try again." >&2
+            fi
+        }
+        return $ret
+    fi
+    latest_version=$(echo "$github_data" | jq -r '.tag_name')
+
+    if [[ "${current_version#v}" == "${latest_version#v}" ]]; then
+        [[ "$silent" == "false" ]] && echo "Package $actual_binary is already up to date (version $current_version)"
         return 0
     fi
-    
-    if [[ ${#packages_to_update[@]} -eq 1 ]]; then
-        echo
-        echo "Update found:"
-        for pkg in "${!update_info[@]}"; do
-            IFS='|' read -r repo_name current_version new_version asset_name <<< "${update_info[$pkg]}"
-            echo "        $pkg v${current_version#v} --> v${new_version#v}"
-        done
-        echo
-        echo -n "Proceed? [y/N] "
-        read -r REPLY
-    else
-        echo
-        echo "Updates found:"
-        for pkg in "${!update_info[@]}"; do
-            IFS='|' read -r repo_name current_version new_version asset_name <<< "${update_info[$pkg]}"
-            echo "        $pkg v${current_version#v} --> v${new_version#v}"
-        done
-        echo
-        echo -n "Proceed with all updates? [y/N] "
-        read -r REPLY
+
+    # Update package
+    echo -n " Updating $binary_name to v${latest_version#v}..."
+    echo -n " Removing old version..."
+    if ! remove_package "$binary_name" --silent; then
+        echo " Failed!"
+        log "ERROR" "Failed to remove old version of $binary_name"
+        return 1
     fi
     
-    if [[ ! "$REPLY" =~ ^[Yy]$ ]]; then
-        echo "Update cancelled."
-        return 0
+    echo -n " Installing $binary_name v${latest_version#v} to $INSTALL_DIR..."
+    if ! standalone_install "$repo_name" --silent; then
+        echo " Failed!"
+        log "ERROR" "Failed to install new version of $binary_name"
+        return 1
     fi
-    
-    # Perform updates
-    local success_count=0
-    for pkg in "${!update_info[@]}"; do
-        IFS='|' read -r repo_name current_version new_version asset_name <<< "${update_info[$pkg]}"
-        
-        echo -n " Updating $pkg to v${new_version#v}..."
-        echo -n " Removing old version..."
-        if ! remove_package "$pkg" --silent; then
-            echo " Failed!"
-            log "ERROR" "Failed to remove old version of $pkg"
-            continue
-        fi
-        
-        echo -n " Installing $pkg v${new_version#v} to $INSTALL_DIR..."
-        if ! standalone_install "$repo_name" --silent; then
-            echo " Failed!"
-            log "ERROR" "Failed to install new version of $pkg"
-            continue
-        fi
-        echo " Success!"
-        
-        ((success_count++))
-    done
+    echo " Success!"
     return 0
 }
 
-# search for repositories using /search/repositories api endpoint. 
 search_packages() {
     local query="$1"
     local page_size=15
