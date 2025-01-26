@@ -136,6 +136,13 @@ Once it has package names, GitHub version, APT version, asset name and whether o
 
         Install all repos? [y/Y] _
 
+
+        Installation complete: 10/14 repository packages installed successfully
+
+        Please install missing depencies using command:
+            sudo apt install -y libncurses5-dev libncursesw5-dev
+
+
 Once a GitHub release is chosen:
 It will extract the files to a temp dir (from cache dir, as any newly downloaded files are copied here as well) and check for binaries, completions files and man files. LIst of files to be installed will be added to $DATA_DIR/gpi-db.json (called packages.json in the script)
 It will check binaries to see if
