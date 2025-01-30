@@ -172,8 +172,8 @@ validate_input() {
             return 3 
         else
             [[ "$silent" == "false" ]] && {
-                echo "Note: $actual_binary is installed (version $current_version). Latest version is $latest_version" >&2
-                echo "Run $0 update $actual_binary to update"
+                echo -e "Note: ${GREEN}$actual_binary${NC} is installed (version ${BLUE}$current_version${NC}). Latest version is ${BLUE}$latest_version${NC}" >&2
+                echo -e "Run ${GREEN}ghpm update${NC} to update"
             }
             # Only output the status line if in batch mode
             [[ "$batch_mode" == "true" ]] && echo "${repo_name}:${actual_binary}:${latest_version#v}:installed,available"
@@ -1147,7 +1147,7 @@ batch_install() {
             local needs_update=false
             local update_repos=()
             for i in "${!skipped_repos[@]}"; do
-                echo "        - ${skipped_repos[$i]} (${skipped_reasons[$i]})"
+                echo -e "        - ${skipped_repos[$i]} (${skipped_reasons[$i]})"
                 if [[ "${skipped_reasons[$i]}" == *"installed"* && "${skipped_reasons[$i]}" != *"up to date"* ]]; then
                     needs_update=true
                     update_repos+=("${skipped_repos[$i]}")
@@ -1157,7 +1157,7 @@ batch_install() {
             if [[ "$needs_update" == "true" ]]; then
                 echo -e "\nTo update installed packages, run:"
                 for repo in "${update_repos[@]}"; do
-                    echo "    ghpm update ${repo##*/}"
+                    echo -e "    ${GREEN}ghpm update ${repo##*/}${NC}"
                 done
             fi
         fi
