@@ -189,6 +189,29 @@ Once it has package names, GitHub version, APT version, asset name and whether o
         Please install missing depencies using command:
             sudo apt install -y libgen
 
+        $ ghpm update
+        Checking for updates...
+
+        btm is already up to date (0.10.2)
+        delta is already up to date (0.18.2)
+        eza is already up to date (v0.20.19)
+        fd has an update available (v10.1.0 → 10.2.0)
+        fzf has an update available (v0.56.0 → 0.58.0)
+        lazygit is already up to date (v0.45.2)
+
+        Updates available 2: 
+            fd (v10.1.0 → 10.2.0)
+            fzf (v0.56.0 → 0.58.0)
+        
+        Proceed to update? [Y/n] y
+        
+        fd (v10.1.0 → 10.2.0)... Done!
+        fzf (v0.56.0 → 0.58.0)... Done!
+
+        Update summary:
+          Packages checked: 8
+          Updates completed: 2
+
 
 Once a GitHub release is chosen:
 It will extract the files to a temp dir (from cache dir, as any newly downloaded files are copied here as well) and check for binaries, completions files and man files. LIst of files to be installed will be added to $DATA_DIR/gpi-db.json (called packages.json in the script)

@@ -1314,16 +1314,17 @@ update_package() {
     # Ensure DB exists and isn't empty
     [[ ! -f "$DB_FILE" ]] || [[ ! -s "$DB_FILE" ]] && echo "No packages installed." && return 0
 
-    declare -a packages_to_update
+    # Declare arrays with -a to ensure they're always defined
+    declare -a packages_to_update=()
+    declare -a available_updates=()
+    declare -a update_versions=()
 
-    # Get list of packages to update
+    # Get list of packages to check
     if [[ "$package_name" == "all" ]]; then
-        # Get all installed packages directly from database
         while IFS= read -r pkg; do
             [[ -n "$pkg" ]] && packages_to_update+=("$pkg")
         done < <(jq -r 'keys[]' "$DB_FILE")
     else
-        # Single package - check if it exists in DB
         if db_ops get "$package_name" &>/dev/null; then
             packages_to_update+=("$package_name")
         else
@@ -1332,79 +1333,93 @@ update_package() {
         fi
     fi
 
-    # Check if we have any packages to update
-    if [[ ${#packages_to_update[@]} -eq 0 ]]; then
-        echo "No packages to update."
-        return 0
-    fi
+    [[ ${#packages_to_update[@]} -eq 0 ]] && echo "No packages to update." && return 0
 
-    [[ "$package_name" == "all" ]] && echo "Checking for updates..." && echo
-
-    local update_count=0
-    local failed_updates=()
-
-    # Process each package
+    echo "Checking for updates..."
+    
+    # First check all packages and collect updates
     for pkg in "${packages_to_update[@]}"; do
-        # Get repository name and current version from database
         local package_info
         package_info=$(db_ops get "$pkg") || continue
         local repo_name=$(echo "$package_info" | jq -r '.repo // empty')
         local current_version=$(echo "$package_info" | jq -r '.version // empty')
         [[ -z "$repo_name" ]] && continue
 
-        # Check if update is needed using validate_input
         local validation_output
         validation_output=$(validate_input "$repo_name" true)
         ret=$?
 
-        # Extract latest version from validation output
         local latest_version=""
         if [[ $ret -eq 3 || $ret -eq 4 ]]; then
             IFS=':' read -r _ _ latest_version _ <<< "$validation_output"
         fi
 
         case $ret in
-            0) # Not installed
-                continue ;;
-            1|2) # Error or repo not found
-                failed_updates+=("$pkg")
-                continue ;;
             3) # Installed and up to date
                 printf "${GREEN}%s${NC} is already up to date (${BLUE}%s${NC})\n" "$pkg" "$current_version"
-                continue ;;
+                ;;
             4) # Update available
-                printf "${GREEN}%s${NC} " "$pkg"
-                echo -n "("
-                printf "${BLUE}%s${NC} → ${BLUE}%s${NC}" "$current_version" "${latest_version}"
-                echo -n ")..."
-                
-                if ! remove_package "$pkg" true; then
-                    echo " Failed to remove old version!"
-                    failed_updates+=("$pkg")
-                    continue
-                fi
-                
-                if ! standalone_install "$repo_name" true; then
-                    echo " Failed to install new version!"
-                    failed_updates+=("$pkg")
-                    continue
-                fi
-                echo " Done!"
-                ((update_count++))
+                available_updates+=("$pkg")
+                update_versions+=("$current_version→$latest_version")
+                printf "${GREEN}%s${NC} has an update available (${BLUE}%s → %s${NC})\n" "$pkg" "$current_version" "$latest_version"
                 ;;
         esac
     done
 
-    # Print summary only for 'all' updates
-    if [[ "$package_name" == "all" ]]; then
-        echo
-        echo "Update summary:"
+    # Only show prompt if there are actually updates available
+    if [[ ${#available_updates[@]} -gt 0 ]]; then
+        echo -e "\nUpdates available ${GREEN}${#available_updates[@]}${NC}:"
+        for i in "${!available_updates[@]}"; do
+            printf "    ${GREEN}%s${NC} (${BLUE}%s${NC})\n" "${available_updates[$i]}" "${update_versions[$i]}"
+        done
+        
+        echo -n -e "\nProceed to update? [Y/n] "
+        read -r response
+        [[ "$response" =~ ^[Nn] ]] && echo "Update cancelled." && return 0
+
+        # Process updates
+        local update_count=0
+        local failed_updates=()
+
+        for pkg in "${available_updates[@]}"; do
+            local package_info
+            package_info=$(db_ops get "$pkg") || continue
+            local repo_name=$(echo "$package_info" | jq -r '.repo // empty')
+            
+            printf "${GREEN}%s${NC} " "$pkg"
+            
+            if ! remove_package "$pkg" true; then
+                echo " Failed to remove old version!"
+                failed_updates+=("$pkg")
+                continue
+            fi
+            
+            if ! standalone_install "$repo_name" true; then
+                echo " Failed to install new version!"
+                failed_updates+=("$pkg")
+                continue
+            fi
+            
+            echo "... Done!"
+            ((update_count++))
+        done
+
+        # Print summary
+        echo -e "\nUpdate summary:"
         echo "  Packages checked: ${#packages_to_update[@]}"
         echo "  Updates completed: $update_count"
         
         if [[ ${#failed_updates[@]} -gt 0 ]]; then
             echo "  Failed updates: ${#failed_updates[@]}"
             echo "  Failed packages: ${failed_updates[*]}"
+        fi
+    else
+        # All packages are up to date
+        if [[ "$package_name" == "all" ]]; then
+            echo -e "\nAll packages are up to date."
+            echo -e "\nUpdate summary:"
+            echo "  Packages checked: ${#packages_to_update[@]}"
+            echo "  Updates available: 0"
         fi
     fi
 
