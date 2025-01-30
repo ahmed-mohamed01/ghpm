@@ -845,10 +845,9 @@ db_ops() {
                 return 0
             fi
 
+            echo "Packages managed by GHPM:"
             echo
-            echo "Packages managed by this script:"
-            echo
-            printf "%-15s %-12s %-s\n" "Package" "Version" "Location"
+            printf "%-20s %-15s %-s${NC}\n" "Package" "Version" "Location"
             printf "%s\n" "-------------------------------------------------------"
 
             jq -r '
@@ -863,10 +862,16 @@ db_ops() {
                     .location
                 ] |
                 @tsv
-            ' "$DB_FILE" | while IFS=$'\t' read -r package version location; do
-                printf "%-15s %-12s %-s\n" "$package" "$version" "$location"
+            ' "$DB_FILE" | sort | while IFS=$'\t' read -r package version location repo; do
+                version="${version#v}"
+                printf "${GREEN}%-20s${NC} " "$package"
+                printf "${BLUE}%-15s${NC} " "$version"
+                local dir=$(dirname "$location")
+                local base=$(basename "$location")
+                echo -e "$dir/${GREEN}$base${NC}"
             done
-            ;;
+            local count=$(jq 'length' "$DB_FILE")
+            echo -e "\nTotal packages: ${GREEN}$count${NC}\n" ;;
             
         "get_version")
             # Check if the key exists first
@@ -1313,14 +1318,10 @@ update_package() {
 
     # Get list of packages to update
     if [[ "$package_name" == "all" ]]; then
-        # Get all installed packages from db_ops list output
-        while IFS= read -r line; do
-            # Skip header lines and empty lines
-            [[ -z "$line" || "$line" =~ ^Package|^----- ]] && continue
-            # Extract package name (first column)
-            pkg=$(echo "$line" | awk '{print $1}')
+        # Get all installed packages directly from database
+        while IFS= read -r pkg; do
             [[ -n "$pkg" ]] && packages_to_update+=("$pkg")
-        done < <(db_ops list)
+        done < <(jq -r 'keys[]' "$DB_FILE")
     else
         # Single package - check if it exists in DB
         if db_ops get "$package_name" &>/dev/null; then
