@@ -101,6 +101,7 @@ log() {
 validate_input() {
     local input="$1"
     local silent="${2:-false}"
+    local batch_mode="${3:-false}"  # New parameter to control status message output
 
     # Check if input is empty
     [[ -z "$input" ]] && [[ "$silent" == "false" ]] && echo "Error: Missing repository name. Usage: ghpm install owner/repo" >&2 && return 1
@@ -166,14 +167,16 @@ validate_input() {
         
         if [[ "${current_version#v}" == "${latest_version#v}" ]]; then
             [[ "$silent" == "false" ]] && echo "Package $actual_binary is already installed and up to date (version $current_version)" >&2
-            echo "${repo_name}:${actual_binary}:${latest_version#v}:installed,up-to-date"
+            # Only output the status line if in batch mode
+            [[ "$batch_mode" == "true" ]] && echo "${repo_name}:${actual_binary}:${latest_version#v}:installed,up-to-date"
             return 3 
         else
             [[ "$silent" == "false" ]] && {
                 echo "Note: $actual_binary is installed (version $current_version). Latest version is $latest_version" >&2
                 echo "Run $0 update $actual_binary to update"
             }
-            echo "${repo_name}:${actual_binary}:${latest_version#v}:installed,available"
+            # Only output the status line if in batch mode
+            [[ "$batch_mode" == "true" ]] && echo "${repo_name}:${actual_binary}:${latest_version#v}:installed,available"
             return 4
         fi
     fi
@@ -1049,7 +1052,7 @@ batch_install() {
         local repo_name binary_name latest_version current_version
         
         # Validate repository format
-        validation_output=$(validate_input "$line" true)
+        validation_output=$(validate_input "$line" true true)
         ret=$?
         
         case $ret in
@@ -1346,7 +1349,7 @@ update_package() {
         [[ -z "$repo_name" ]] && continue
 
         local validation_output
-        validation_output=$(validate_input "$repo_name" true)
+        validation_output=$(validate_input "$repo_name" true true)
         ret=$?
 
         local latest_version=""
