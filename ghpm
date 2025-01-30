@@ -1,5 +1,9 @@
 #! /usr/bin/env bash
 
+## ghpm - GitHub Package Manager
+## 
+## A simple package manager for GitHub repositories.    
+
 set -uo pipefail      # set -e error handling, -u undefined variable protection -o pipefail piepline faulure catching. 
 DISPLAY_ISSUES=false # make log output visible. 
 
@@ -38,6 +42,7 @@ declare -a ISSUES=()
 readonly YELLOW='\033[1;33m'
 readonly RED='\033[0;31m'
 readonly GREEN='\033[0;32m'
+readonly BLUE='\033[0;34m'
 readonly NC='\033[0m'
 
 # Declare SHELL_STATUS as global associative array
@@ -748,20 +753,21 @@ db_ops() {
             fi
 
             if ! jq --arg name "$binary_name" \
-                   --arg repo "$repo_name" \
-                   --arg id "$ghpm_id" \
-                   --arg ver "$version" \
-                   --argjson files "$files_json" \
-                   --argjson aliases "$aliases_json" \
-                   '.[$name] = {
-                       repo: $repo,
-                       ghpm_id: $id,
-                       version: $ver,
-                       installed_date: $time,
-                       last_updated: $time,
-                       installed_files: $files,
-                       aliases: $aliases
-                   }' "$DB_FILE" > "${DB_FILE}.tmp"; then
+                --arg repo "$repo_name" \
+                --arg id "$ghpm_id" \
+                --arg ver "$version" \
+                --arg time "$current_time" \
+                --argjson files "$files_json" \
+                --argjson aliases "$aliases_json" \
+                '.[$name] = {
+                    repo: $repo,
+                    ghpm_id: $id,
+                    version: $ver,
+                    installed_date: $time,
+                    last_updated: $time,
+                    installed_files: $files,
+                    aliases: $aliases
+                }' "$DB_FILE" > "${DB_FILE}.tmp"; then
                 log "ERROR" "Failed to update database file"
                 rm -f "${DB_FILE}.tmp"
                 return 1
@@ -1297,84 +1303,112 @@ remove_package() {
 }
 
 update_package() {
-    local binary_name="$1"
+    local package_name="${1:-all}"
     local silent="${2:-false}"
 
-    # Get package info from database
-    local package_info
-    local db_lookup_result=0
-    package_info=$(db_ops get "$binary_name" 2>/dev/null) || db_lookup_result=$?
+    # Ensure DB exists and isn't empty
+    [[ ! -f "$DB_FILE" ]] || [[ ! -s "$DB_FILE" ]] && echo "No packages installed." && return 0
 
-    if [[ $db_lookup_result -ne 0 || -z "$package_info" ]]; then
-        # Try looking up by repo basename if binary name lookup failed
-        local repo_basename
-        repo_basename=$(basename "$binary_name")
-        if [[ "$repo_basename" != "$binary_name" ]]; then
-            package_info=$(db_ops get "$repo_basename" 2>/dev/null) || db_lookup_result=$?
-        fi
-        
-        if [[ $db_lookup_result -ne 0 || -z "$package_info" ]]; then
-            [[ "$silent" == "false" ]] && echo "Error: $binary_name is not installed" >&2
+    declare -a packages_to_update
+
+    # Get list of packages to update
+    if [[ "$package_name" == "all" ]]; then
+        # Get all installed packages from db_ops list output
+        while IFS= read -r line; do
+            # Skip header lines and empty lines
+            [[ -z "$line" || "$line" =~ ^Package|^----- ]] && continue
+            # Extract package name (first column)
+            pkg=$(echo "$line" | awk '{print $1}')
+            [[ -n "$pkg" ]] && packages_to_update+=("$pkg")
+        done < <(db_ops list)
+    else
+        # Single package - check if it exists in DB
+        if db_ops get "$package_name" &>/dev/null; then
+            packages_to_update+=("$package_name")
+        else
+            echo "Error: $package_name is not installed" >&2
             return 1
         fi
     fi
 
-    # Validate package info structure
-    if ! echo "$package_info" | jq -e 'has("repo") and has("version") and has("installed_files")' >/dev/null; then
-        [[ "$silent" == "false" ]] && echo "Error: Invalid database entry for $binary_name" >&2
-        return 1
-    fi
-
-    local repo_name=$(echo "$package_info" | jq -r '.repo')
-    local current_version=$(echo "$package_info" | jq -r '.version')
-    local actual_binary=$(echo "$package_info" | jq -r '.installed_files[] | select(.type == "binary") | .name' | head -n1)
-
-    # Skip if we couldn't get required info
-    if [[ -z "$repo_name" || -z "$current_version" || -z "$actual_binary" ]]; then
-        [[ "$silent" == "false" ]] && echo "Error: Invalid database entry for $binary_name" >&2
-        return 1
-    fi
-
-    # Get latest version from GitHub
-    local github_data latest_version
-    github_data=$(query_github_api "$repo_name")
-    ret=$?
-    if [[ $ret -ne 0 ]]; then
-        [[ "$silent" == "false" ]] && {
-            if [[ $ret -eq 2 ]]; then
-                echo "Error: Repository $repo_name not found. Please check the repository name and try again." >&2
-            else 
-                echo "Error: Failed to access GitHub API. Please check your connection and try again." >&2
-            fi
-        }
-        return $ret
-    fi
-    latest_version=$(echo "$github_data" | jq -r '.tag_name')
-
-    if [[ "${current_version#v}" == "${latest_version#v}" ]]; then
-        [[ "$silent" == "false" ]] && echo "Package $actual_binary is already up to date (version $current_version)"
+    # Check if we have any packages to update
+    if [[ ${#packages_to_update[@]} -eq 0 ]]; then
+        echo "No packages to update."
         return 0
     fi
 
-    # Update package
-    echo -n " Updating $binary_name to v${latest_version#v}..."
-    echo -n " Removing old version..."
-    if ! remove_package "$binary_name" --silent; then
-        echo " Failed!"
-        log "ERROR" "Failed to remove old version of $binary_name"
-        return 1
+    [[ "$package_name" == "all" ]] && echo "Checking for updates..." && echo
+
+    local update_count=0
+    local failed_updates=()
+
+    # Process each package
+    for pkg in "${packages_to_update[@]}"; do
+        # Get repository name and current version from database
+        local package_info
+        package_info=$(db_ops get "$pkg") || continue
+        local repo_name=$(echo "$package_info" | jq -r '.repo // empty')
+        local current_version=$(echo "$package_info" | jq -r '.version // empty')
+        [[ -z "$repo_name" ]] && continue
+
+        # Check if update is needed using validate_input
+        local validation_output
+        validation_output=$(validate_input "$repo_name" true)
+        ret=$?
+
+        # Extract latest version from validation output
+        local latest_version=""
+        if [[ $ret -eq 3 || $ret -eq 4 ]]; then
+            IFS=':' read -r _ _ latest_version _ <<< "$validation_output"
+        fi
+
+        case $ret in
+            0) # Not installed
+                continue ;;
+            1|2) # Error or repo not found
+                failed_updates+=("$pkg")
+                continue ;;
+            3) # Installed and up to date
+                printf "${GREEN}%s${NC} is already up to date (${BLUE}%s${NC})\n" "$pkg" "$current_version"
+                continue ;;
+            4) # Update available
+                printf "${GREEN}%s${NC} " "$pkg"
+                echo -n "("
+                printf "${BLUE}%s${NC} → ${BLUE}%s${NC}" "$current_version" "${latest_version}"
+                echo -n ")..."
+                
+                if ! remove_package "$pkg" true; then
+                    echo " Failed to remove old version!"
+                    failed_updates+=("$pkg")
+                    continue
+                fi
+                
+                if ! standalone_install "$repo_name" true; then
+                    echo " Failed to install new version!"
+                    failed_updates+=("$pkg")
+                    continue
+                fi
+                echo " Done!"
+                ((update_count++))
+                ;;
+        esac
+    done
+
+    # Print summary only for 'all' updates
+    if [[ "$package_name" == "all" ]]; then
+        echo
+        echo "Update summary:"
+        echo "  Packages checked: ${#packages_to_update[@]}"
+        echo "  Updates completed: $update_count"
+        
+        if [[ ${#failed_updates[@]} -gt 0 ]]; then
+            echo "  Failed updates: ${#failed_updates[@]}"
+            echo "  Failed packages: ${failed_updates[*]}"
+        fi
     fi
-    
-    echo -n " Installing $binary_name v${latest_version#v} to $INSTALL_DIR..."
-    if ! standalone_install "$repo_name" --silent; then
-        echo " Failed!"
-        log "ERROR" "Failed to install new version of $binary_name"
-        return 1
-    fi
-    echo " Success!"
+
     return 0
 }
-
 search_packages() {
     local query="$1"
     local page_size=15
