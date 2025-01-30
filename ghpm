@@ -166,7 +166,7 @@ validate_input() {
         latest_version=$(echo "$github_data" | jq -r '.tag_name')
         
         if [[ "${current_version#v}" == "${latest_version#v}" ]]; then
-            [[ "$silent" == "false" ]] && echo "Package $actual_binary is already installed and up to date (version $current_version)" >&2
+            [[ "$silent" == "false" ]] && echo -e "Package ${GREEN}$actual_binary${NC} is already installed and up to date (version ${BLUE}$current_version${NC})" >&2
             # Only output the status line if in batch mode
             [[ "$batch_mode" == "true" ]] && echo "${repo_name}:${actual_binary}:${latest_version#v}:installed,up-to-date"
             return 3 
@@ -867,8 +867,8 @@ db_ops() {
                 @tsv
             ' "$DB_FILE" | sort | while IFS=$'\t' read -r package version location repo; do
                 version="${version#v}"
-                printf "${GREEN}%-20s${NC} " "$package"
-                printf "${BLUE}%-15s${NC} " "$version"
+                printf "${GREEN}%s${NC} " "$package"
+                printf "${BLUE}%s${NC} " "$version"
                 local dir=$(dirname "$location")
                 local base=$(basename "$location")
                 echo -e "$dir/${GREEN}$base${NC}"
