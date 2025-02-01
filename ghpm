@@ -904,7 +904,7 @@ setup_paths() {
         ["zsh"]="export MANPATH=\"\$MANPATH:$MAN_DIR\""
         ["fish"]="set -x MANPATH \$MANPATH $MAN_DIR"
     )
-    
+
     # Process each supported shell
     for shell in "${!shell_configs[@]}"; do
         local config_file="${shell_configs[$shell]}"
@@ -1195,11 +1195,13 @@ remove_package() {
     fi
 
     if [[ "$silent_mode" == "false" ]]; then
-        echo -e "\nRemoving package: $binary_name"
-        echo "Repository: $repo_name"
-        echo "Installed version: $version"
+        echo -e "\nRemoving package: ${GREEN}${binary_name}${NC}"
+        echo -e "Repository: ${GREEN}${repo_name}${NC}"
+        echo -e "Installed version: ${BLUE}${version}${NC}"
         echo -e "\nFiles to be removed:"
-        printf '%s\n' "${files_to_remove[@]/#/    }"
+        for file in "${files_to_remove[@]}"; do
+            printf "    ${GREEN}%-20s${NC} --> ${BLUE}%s${NC}\n" "$(basename "$file")" "$file"
+        done
 
         read -p $'\nProceed with removal? [y/N]: ' -r
         [[ ! "$REPLY" =~ ^[Yy]$ ]] && echo "Removal cancelled." && return 1
@@ -1219,7 +1221,7 @@ remove_package() {
                 move_failed=true
                 break
             fi
-            [[ "$silent_mode" == "false" ]] && echo "Removed: $file"
+            [[ "$silent_mode" == "false" ]] && echo -e "Removed: ${GREEN}$(basename "$file")${NC} from ${BLUE}${file%/*}${NC}"
         else
             log "WARNING" "File not found: $file"
         fi
@@ -1249,7 +1251,7 @@ remove_package() {
     fi
 
     if [[ "$silent_mode" == "false" ]]; then
-        echo -e "\nPackage $binary_name removed successfully"
+        echo -e "\nPackage ${GREEN}${binary_name}${NC} removed successfully"
     fi
     log "INFO" "Successfully removed package: $binary_name"
 
