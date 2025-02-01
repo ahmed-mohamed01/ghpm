@@ -155,7 +155,7 @@ validate_input() {
         if [[ $ret -ne 0 ]]; then
             [[ "$silent" == "false" ]] && {
                 if [[ $ret -eq 2 ]]; then
-                    echo "Error: Repository $repo_name not found. Please check the repository name and try again." >&2
+                    echo -e "Error: Repository ${GREEN}${repo_name}${NC} not found. Please check the repository name and try again." >&2
                 else 
                     echo "Error: Failed to access GitHub API. Please check your connection and try again." >&2
                 fi
@@ -187,7 +187,7 @@ validate_input() {
     if [[ $ret -ne 0 ]]; then
         [[ "$silent" == "false" ]] && {
             if [[ $ret -eq 2 ]]; then
-                echo "Error: Repository $repo_name not found. Please check the repository name and try again." >&2
+                echo -e "Error: Repository ${GREEN}${repo_name}${NC} not found. Please check the repository name and try again." >&2
             else 
                 echo "Error: Failed to access GitHub API. Please check your connection and try again." >&2
             fi
@@ -1032,8 +1032,8 @@ batch_install() {
         echo
         # Fixed width for consistent columns
         local pkg_width=20
-        local ver_width=15
-        local apt_width=15
+        local ver_width=10
+        local apt_width=10
         local asset_width=50
         
         printf "%-${pkg_width}s %-${ver_width}s %-${apt_width}s %-${asset_width}s\n" \
