@@ -1543,11 +1543,10 @@ main() {
     # Clean old cache (>90 days)
     [[ -d "$CACHE_DIR" ]] && find "$CACHE_DIR" -type f -mtime +90 -delete 2>/dev/null
 
+    local cmd="${1:-help}"
+    [[ $# -gt 0 ]] && shift
     local silent=false
-    [[ "$1" == "-u" ]] && silent=true && shift
-
-    local cmd="$1"
-    shift
+    [[ $# -gt 0 ]] && [[ "$1" == "-u" ]] && silent=true && shift
 
     case "$cmd" in
         "install")
@@ -1591,7 +1590,7 @@ main() {
         "--version")
             echo "0.0.7" ;;
 
-        *)
+        "help"|"--help"|"-h"|"*"|*)
             echo "GitHub Package Manager - a script to download and manage precompiled binaries from Github"
             echo
             echo "Usage: $0 [-u] <command> [options]"
