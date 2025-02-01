@@ -1,7 +1,6 @@
 #! /usr/bin/env bash
 
 ## ghpm - GitHub Package Manager
-## 
 ## A simple package manager for GitHub repositories.    
 
 set -uo pipefail      # set -e error handling, -u undefined variable protection -o pipefail piepline faulure catching. 
@@ -212,7 +211,6 @@ query_github_api() {
     # Validate cache
     if [[ -f "$CACHE_FILE" ]]; then
         local repo_cached_data
-        # Use -r to get raw output and check if it's null
         repo_cached_data=$(jq -r --arg repo "$repo_name" 'if has($repo) then .[$repo] else "null" end' "$CACHE_FILE" 2>/dev/null)
 
         if [[ "$repo_cached_data" != "null" && -n "$repo_cached_data" ]]; then
@@ -251,29 +249,26 @@ query_github_api() {
     fi
     
     case $http_code in
-        200)
-            # Verify we got valid JSON 
-            if ! echo "$api_response" | jq empty 2>/dev/null; then
+        200) if ! echo "$api_response" | jq empty 2>/dev/null; then
                 log "ERROR" "Invalid JSON response from GitHub API"
                 return 1
-            fi
+             fi
 
-            api_response=$(echo "$api_response" | jq '. + {_source: "github"}')   # add source info
+             api_response=$(echo "$api_response" | jq '. + {_source: "github"}')   # add source info
             
-            # Cache the response with a timestamp
-            local new_cache_data
-            new_cache_data=$(jq -n --argjson data "$api_response" --arg time "$current_time" \
+             # Cache the response with a timestamp
+             local new_cache_data
+             new_cache_data=$(jq -n --argjson data "$api_response" --arg time "$current_time" \
                 '{timestamp: $time | tonumber, data: $data}')
-            if [[ -f "$CACHE_FILE" ]]; then
+             if [[ -f "$CACHE_FILE" ]]; then
                 jq --arg repo "$repo_name" --argjson new_data "$new_cache_data" \
                    '.[$repo] = $new_data' "$CACHE_FILE" > "${CACHE_FILE}.tmp" && mv "${CACHE_FILE}.tmp" "$CACHE_FILE"
-            else
+             else
                 jq -n --arg repo "$repo_name" --argjson new_data "$new_cache_data" \
                    '{($repo): $new_data}' > "$CACHE_FILE"
-            fi
-            log quiet "INFO" "GitHub api response obtained and cached for $repo_name"
-            echo "$api_response"
-            ;;
+             fi
+             log quiet "INFO" "GitHub api response obtained and cached for $repo_name"
+             echo "$api_response" ;;
         401) log "ERROR" "Authentication failed for $repo_name. Check GITHUB_TOKEN."; return 1 ;;
         403) log "ERROR" "Rate limit exceeded or access forbidden for $repo_name."; return 1 ;;
         404) log "ERROR" "Repository $repo_name not found."; return 2 ;;
@@ -281,7 +276,6 @@ query_github_api() {
     esac
 }
 
-# TODO: Add caching. 
 process_asset_data() {
     local api_response="$1"
 
@@ -759,6 +753,7 @@ db_ops() {
                 --arg repo "$repo_name" \
                 --arg id "$ghpm_id" \
                 --arg ver "$version" \
+                --arg time "$current_time" \
                 --argjson files "$files_json" \
                 --argjson aliases "$aliases_json" \
                 '.[$name] = {
@@ -1067,14 +1062,10 @@ batch_install() {
         ret=$?
         
         case $ret in
-            0) # Not installed, proceed with installation
-                IFS=':' read -r repo_name binary_name latest_version <<< "$validation_output"
+            0)  IFS=':' read -r repo_name binary_name latest_version <<< "$validation_output"
                 ;;
-            1|2) # Error or repo not found
-                continue
-                ;;
-            3) # Installed and up to date
-                IFS=':' read -r repo_name binary_name latest_version status <<< "$validation_output"
+            1|2) continue ;;
+            3)  IFS=':' read -r repo_name binary_name latest_version status <<< "$validation_output"
                 current_version=$(db_ops "get_version" "$binary_name")
                 # Get APT version
                 local apt_version="not found"
@@ -1091,10 +1082,8 @@ batch_install() {
                     "$BLUE" "$current_version" "$NC" \
                     "$BLUE" "$apt_version" "$NC" \
                     "skipped: installed, up to date"
-                continue
-                ;;
-            4) # Update available
-                IFS=':' read -r repo_name binary_name latest_version status <<< "$validation_output"
+                continue ;;
+            4)  IFS=':' read -r repo_name binary_name latest_version status <<< "$validation_output"
                 current_version=$(db_ops "get_version" "$binary_name")
                 # Get APT version
                 local apt_version="not found"
@@ -1111,11 +1100,8 @@ batch_install() {
                     "$BLUE" "${latest_version}*" "$NC" \
                     "$BLUE" "$apt_version" "$NC" \
                     "skipped: installed, update available"
-                continue
-                ;;
-            *)
-                continue
-                ;;
+                continue ;;
+            *) continue ;;
         esac
         
         # Process repository data
@@ -1253,6 +1239,7 @@ batch_install() {
 
     return 0
 }
+
 remove_package() {
     local binary_name="$1"
     local silent_mode="${2:-false}"
@@ -1455,6 +1442,7 @@ update_package() {
 
     return 0
 }
+
 search_packages() {
     local query="$1"
     local page_size=15
