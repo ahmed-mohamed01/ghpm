@@ -94,7 +94,7 @@ bat ... Done!
 rg ... Done!
 
 Update summary:
-  Packages checked: 11
+  Packages checked: 4
   Updates completed: 2
 ```
 
