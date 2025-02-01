@@ -15,5 +15,5 @@ dandavison/delta
 aristocratos/btop
 pemistahl/grex
 
-repo/doesnt-exist | none    # a non-existent repo
+repo/doesnt-exist    # a non-existent repo
 ahmed-mohamed01/ghpm        # ghpm repo, no binaries
