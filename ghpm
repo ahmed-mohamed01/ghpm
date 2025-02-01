@@ -759,7 +759,6 @@ db_ops() {
                 --arg repo "$repo_name" \
                 --arg id "$ghpm_id" \
                 --arg ver "$version" \
-                --arg time "$current_time" \
                 --argjson files "$files_json" \
                 --argjson aliases "$aliases_json" \
                 '.[$name] = {
@@ -843,15 +842,20 @@ db_ops() {
             ;;
             
         "list")
-            if [[ ! -f "$DB_FILE" ]] || [[ "$(jq 'length' "$DB_FILE")" -eq 0 ]]; then
+            if [[ ! -f "$DB_FILE" ]] || [[ ! -s "$DB_FILE" ]]; then
                 echo "No packages installed via GHPM."
                 return 0
             fi
 
             echo "Packages managed by GHPM:"
             echo
-            printf "%-20s %-15s %-s${NC}\n" "Package" "Version" "Location"
-            printf "%s\n" "-------------------------------------------------------"
+            # Column widths
+            local pkg_width=12
+            local ver_width=10
+            
+            # Print headers
+            printf "%-${pkg_width}s  %-${ver_width}s  %s\n" "Package" "Version" "Location"
+            printf "%s\n" "$(printf '%0.s-' $(seq 1 80))"
 
             jq -r '
                 to_entries[] |
@@ -863,16 +867,16 @@ db_ops() {
                     $root.key,
                     $root.value.version,
                     .location
-                ] |
-                @tsv
-            ' "$DB_FILE" | sort | while IFS=$'\t' read -r package version location repo; do
+                ] | @tsv
+            ' "$DB_FILE" | sort | while IFS=$'\t' read -r package version location; do
                 version="${version#v}"
-                printf "${GREEN}%s${NC} " "$package"
-                printf "${BLUE}%s${NC} " "$version"
-                local dir=$(dirname "$location")
-                local base=$(basename "$location")
-                echo -e "$dir/${GREEN}$base${NC}"
+                # Account for color code length in padding
+                dir=$(dirname "$location")
+                base=$(basename "$location")
+                printf "${GREEN}%-${pkg_width}s${NC}  ${BLUE}%-${ver_width}s${NC}  %s/${GREEN}%s${NC}\n" \
+                    "$package" "$version" "$dir" "$base"
             done
+            
             local count=$(jq 'length' "$DB_FILE")
             echo -e "\nTotal packages: ${GREEN}$count${NC}\n" ;;
             
@@ -1033,8 +1037,15 @@ batch_install() {
     if [[ "$silent" == "false" ]]; then
         echo "Processing ($total_repos) repositories from $repos_file:"
         echo
-        printf "%-15s %-12s %-12s %-50s\n" "Binary" "Github" "APT" "Asset/Notes"
-        echo "------------------------------------------------------------------------------------------------"
+        # Column widths
+        local pkg_width=20
+        local ver_width=15
+        local apt_width=15
+        local asset_width=50
+        
+        # Print headers
+        printf "%-${pkg_width}s %-${ver_width}s %-${apt_width}s %-${asset_width}s\n" "Binary" "Github" "APT" "Asset/Notes"
+        printf "%s\n" "$(printf '%0.s-' $(seq 1 95))"
     fi
 
     # Initialize arrays
@@ -1075,10 +1086,14 @@ batch_install() {
                 fi
                 skipped_repos+=("$repo_name")
                 skipped_reasons+=("installed and up to date")
-                [[ "$silent" == "false" ]] && printf "%-15s %-12s %-12s %-50s\n" "$binary_name" "$current_version" "$apt_version" "skipped: installed, up to date"
+                [[ "$silent" == "false" ]] && printf "%s%-${pkg_width}s%s %s%-${ver_width}s%s %s%-${apt_width}s%s %s\n" \
+                    "$GREEN" "$binary_name" "$NC" \
+                    "$BLUE" "$current_version" "$NC" \
+                    "$BLUE" "$apt_version" "$NC" \
+                    "skipped: installed, up to date"
                 continue
                 ;;
-            4) # Installed but update available
+            4) # Update available
                 IFS=':' read -r repo_name binary_name latest_version status <<< "$validation_output"
                 current_version=$(db_ops "get_version" "$binary_name")
                 # Get APT version
@@ -1091,7 +1106,11 @@ batch_install() {
                 fi
                 skipped_repos+=("$repo_name")
                 skipped_reasons+=("installed, update available")
-                [[ "$silent" == "false" ]] && printf "%-15s %-12s %-12s %-50s\n" "$binary_name" "${latest_version}*" "$apt_version" "skipped: installed, update available"
+                [[ "$silent" == "false" ]] && printf "%s%-${pkg_width}s%s %s%-${ver_width}s%s %s%-${apt_width}s%s %s\n" \
+                    "$GREEN" "$binary_name" "$NC" \
+                    "$BLUE" "${latest_version}*" "$NC" \
+                    "$BLUE" "$apt_version" "$NC" \
+                    "skipped: installed, update available"
                 continue
                 ;;
             *)
@@ -1125,7 +1144,11 @@ batch_install() {
         if [[ "$chosen_asset" == "null" ]]; then
             skipped_repos+=("$repo_name")
             [[ "$has_source" == "true" ]] && skipped_reasons+=("source only") || skipped_reasons+=("no viable assets")
-            [[ "$silent" == "false" ]] && printf "%-15s %-12s %-12s %-50s\n" "$binary_name" "source" "$apt_version" "skipped: source only"
+            [[ "$silent" == "false" ]] && printf "%s%-${pkg_width}s%s %s%-${ver_width}s%s %s%-${apt_width}s%s %s\n" \
+                "$GREEN" "$binary_name" "$NC" \
+                "$BLUE" "source" "$NC" \
+                "$BLUE" "$apt_version" "$NC" \
+                "skipped: source only"
             continue
         fi
 
@@ -1136,7 +1159,11 @@ batch_install() {
         gh_versions+=("$gh_version")
         apt_versions+=("$apt_version")
         assets+=("$chosen_asset")
-        [[ "$silent" == "false" ]] && printf "%-15s %-12s %-12s %-50s\n" "$binary_name" "$gh_version" "$apt_version" "$chosen_asset"
+        [[ "$silent" == "false" ]] && printf "%s%-${pkg_width}s%s %s%-${ver_width}s%s %s%-${apt_width}s%s %s\n" \
+            "$GREEN" "$binary_name" "$NC" \
+            "$BLUE" "$gh_version" "$NC" \
+            "$BLUE" "$apt_version" "$NC" \
+            "$chosen_asset"
     done < "$repos_file"
 
     # Check if we have any repos to install
@@ -1467,36 +1494,41 @@ search_packages() {
         echo "Found $total_count repositories matching '$query'"
         echo "Showing page $current_page of $total_pages (${page_size} results per page)"
         echo
-        printf "%-30s %-8s %-8s %-8s %-40s\n" "Repository" "Stars" "Latest" "Assets" "Description"
-        printf "%$(tput cols)s\n" | tr ' ' '-'
+        # Column widths
+        local repo_width=35
+        local stars_width=10
+        local ver_width=10
+        local desc_width=40
+
+        printf "%-${repo_width}s  %-${stars_width}s  %-${ver_width}s  %-${desc_width}s\n" \
+            "Repository" "Stars" "Latest" "Description"
+        printf "%s\n" "$(printf '%0.s-' $(seq 1 95))"
 
         echo "$items_response" | jq -r '.items[] | . as $repo | 
             ($repo.full_name[:30]) as $name |
-            ($repo.description[:60] // "No description") as $desc |
-            ($repo.stargazers_count | tostring) as $stars |
-            $repo.full_name as $full_name |
-            [$name, $stars, "checking..", $desc, $full_name] | @tsv' | \
-        while IFS=$'\t' read -r name stars _ desc full_name; do
-            [[ -z "$example_repo" ]] && example_repo="$full_name"
-            
-            local latest_ver="N/A"
-            local asset_count="0"
-            if release_info=$(query_github_api "$name" 2>/dev/null); then
-                latest_ver=$(echo "$release_info" | jq -r '.tag_name // "N/A"')
-                # Format version string
-                if [[ "$latest_ver" != "N/A" ]]; then
-                    latest_ver="${latest_ver#v}"
-                    if [[ "$latest_ver" =~ [0-9] ]]; then
-                        latest_ver="${latest_ver:0:8}"
-                    else
-                        latest_ver="${latest_ver:0:5}..."
-                    fi
-                fi
-                asset_count=$(echo "$release_info" | jq -r '.assets | length')
-            fi
-            printf "%-30s %-8s %-8s %-8s %-40s\n" "$name" "$stars" "$latest_ver" "$asset_count" "$desc"
-        done
+            ($repo.description[:37] // "(No description)") as $desc |
+            ($repo.stargazers_count|tostring) as $stars |
+            [
+                $name,
+                $stars,
+                $desc,
+                $repo.full_name
+            ] | @tsv' | while IFS=$'\t' read -r name stars desc full_name; do
+            latest_ver="N/A"
+            asset_count=0
 
+            if [[ "$fetch_releases" == "true" ]]; then
+                release_info=$(query_github_api "$full_name/releases/latest" 2>/dev/null)
+                if [[ $? -eq 0 ]]; then
+                    latest_ver=$(echo "$release_info" | jq -r '.tag_name // "N/A"')
+                    latest_ver="${latest_ver#v}"  # Strip leading 'v' if present
+                fi
+            fi
+
+            printf "%-${repo_width}s  %-${stars_width}s  %-${ver_width}s  %-${desc_width}s\n" \
+                "$name" "$stars" "$latest_ver" "$desc"
+        done
+        
         echo
         echo "Navigation:"
         [[ $current_page -gt 1 ]] && echo "  [p] Previous page"
