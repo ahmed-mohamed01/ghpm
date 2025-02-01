@@ -1016,7 +1016,6 @@ batch_install() {
     local all_dependencies=()
     
     [[ ! -f "$repos_file" ]] && log "ERROR" "Repositories file '$repos_file' not found." && return 1
-    sed -i -e '$a\' "$repos_file"
     # Count valid repositories
     local total_repos=0
     while IFS= read -r line; do
@@ -1044,7 +1043,7 @@ batch_install() {
     local repo_list=() binary_names=() gh_versions=() apt_versions=() assets=()
     local valid_packages=0
 
-    while IFS= read -r line; do
+    while IFS= read -r line || [ -n "$line" ]; do
         [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
         line=$(echo "$line" | sed 's/[[:space:]]*#.*$//')
         [[ -z "$line" ]] && continue
