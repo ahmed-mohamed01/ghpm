@@ -962,13 +962,13 @@ standalone_install() {
 
     if [[ "$silent" == "false" ]]; then
         # Display installation details    
-        echo -e "\nRepo: $repo_name"
-        echo "Latest version: $version"
-        echo "Release asset: $asset_name"
+        echo -e "\nRepo: ${GREEN}${repo_name}${NC}"
+        echo -e "Latest version: ${BLUE}${version}${NC}"
+        echo -e "Release asset: ${asset_name}"
         echo "Files to install:"
 
         for key in "${!sorted_files[@]}"; do
-            printf "    %-20s --> %s\n" "$(basename "${sorted_files[$key]}")" "${sorted_install_map[$key]}"
+            printf "    ${GREEN}%-20s${NC} --> ${BLUE}%s${NC}\n" "$(basename "${sorted_files[$key]}")" "${sorted_install_map[$key]}"
         done
         echo
 
@@ -989,7 +989,9 @@ standalone_install() {
     local success=true
     for key in "${!sorted_files[@]}"; do
         mkdir -p "$(dirname "${sorted_install_map[$key]}")"
-        [[ "$silent" == "false" ]] && echo "Installing $(basename "${sorted_files[$key]}"): ${sorted_install_map[$key]}"
+        if [[ "$silent" == "false" ]]; then
+            echo -e "Installing ${GREEN}$(basename "${sorted_files[$key]}")${NC}: ${BLUE}${sorted_install_map[$key]}${NC}"
+        fi
         
         if ! mv "${sorted_files[$key]}" "${sorted_install_map[$key]}"; then
             log "ERROR" "Failed to move ${sorted_files[$key]} to ${sorted_install_map[$key]}"
@@ -1005,7 +1007,7 @@ standalone_install() {
     db_ops add "$binary_name" "$repo_name" "$version" "sorted_install_map" "sorted_files" || return 1
     setup_paths
 
-    [[ "$silent" == "false" ]] && echo -e "\nInstalled $binary_name to $INSTALL_DIR\n"
+    [[ "$silent" == "false" ]] && echo -e "\nInstalled ${GREEN}${binary_name}${NC} to ${BLUE}${INSTALL_DIR}${NC}\n"
 
     return 0
 }
