@@ -1016,12 +1016,12 @@ batch_install() {
     local all_dependencies=()
     
     [[ ! -f "$repos_file" ]] && log "ERROR" "Repositories file '$repos_file' not found." && return 1
-
+    sed -i -e '$a\' "$repos_file"
     # Count valid repositories
     local total_repos=0
     while IFS= read -r line; do
         [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
-        line=$(echo "$line" | sed 's/[[:space:]]*#.*$//')
+        line=$(echo "$line" | sed 's/#.*$//' | sed 's/%.*$//' | tr -d '\r' | xargs)
         [[ -z "$line" ]] && continue
         ((total_repos++))
     done < "$repos_file"
@@ -1103,14 +1103,9 @@ batch_install() {
                     fi
                 fi
                 ;;
-            1)  printf "%b%-${pkg_width}s %b%-${ver_width}s %b%-${apt_width}s %b%s%b %s\n" \
-                    "$GREEN" "$line" \
-                    "$NC$BLUE" "-" \
-                    "$NC$BLUE" "-" \
-                    "$NC$YELLOW" "skipped:" "$NC" "invalid format"
-                ;;
-            2)  printf "%b%-${pkg_width}s %b%-${ver_width}s %b%-${apt_width}s %b%s%b %s\n" \
-                    "$GREEN" "$line" \
+            1|2)  
+                printf "%b%-${pkg_width}s %b%-${ver_width}s %b%-${apt_width}s %b%s%b %s\n" \
+                    "$GREEN" "$binary_name" \
                     "$NC$BLUE" "-" \
                     "$NC$BLUE" "-" \
                     "$NC$YELLOW" "skipped:" "$NC" "repo not found"
