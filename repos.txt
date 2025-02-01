@@ -14,3 +14,6 @@ ClementTsang/bottom | btm
 dandavison/delta
 aristocratos/btop
 pemistahl/grex
+
+repo/doesnt-exist | none    # a non-existent repo
+ahmed-mohamed01/ghpm        # ghpm repo, no binaries
