@@ -1211,7 +1211,7 @@ batch_install() {
 
         if [[ ${#repo_list[@]} -gt 0 ]]; then
             echo
-            read -p "Install all repos? [y/Y] " -r response
+            read -p "Install all repos? [y/N] " -r response
             [[ ! "$response" =~ ^[Yy]$ ]] && echo "Installation cancelled." && return 0
         fi
     fi
