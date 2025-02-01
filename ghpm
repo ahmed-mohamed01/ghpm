@@ -753,6 +753,7 @@ db_ops() {
                 --arg repo "$repo_name" \
                 --arg id "$ghpm_id" \
                 --arg ver "$version" \
+                --arg time "$current_time" \
                 --argjson files "$files_json" \
                 --argjson aliases "$aliases_json" \
                 '.[$name] = {
@@ -1025,7 +1026,6 @@ batch_install() {
     done < "$repos_file"
 
     if [[ "$silent" == "false" ]]; then
-        echo
         echo "Processing ($total_repos) repositories from $repos_file:"
         echo
         # Fixed width for consistent columns
@@ -1064,12 +1064,7 @@ batch_install() {
         # Validate repository
         validation_output=$(validate_input "$line" true true)
         ret=$?
-
-        local latest_version=""
-        if [[ $ret -eq 3 || $ret -eq 4 ]]; then
-            IFS=':' read -r _ _ latest_version _ <<< "$validation_output"
-        fi
-
+        
         case $ret in
             0)  IFS=':' read -r repo_name binary_name latest_version <<< "$validation_output"
                 gh_response=$(query_github_api "$repo_name")
@@ -1132,15 +1127,12 @@ batch_install() {
     done < "$repos_file"
 
     if [[ ${#repo_list[@]} -eq 0 ]]; then
-        echo
-        echo -e "${YELLOW}No repositories to install - all packages are either installed, skipped, or source only.${NC}"
-        echo
+        echo -e "\n${YELLOW}No repositories to install - all packages are either installed, skipped, or source only.${NC}"
         return 0
     fi
 
     if [[ "$silent" == "false" ]]; then
-        echo
-        echo "Repos to install:"
+        echo -e "\nRepos to install:"
         for i in "${!repo_list[@]}"; do
             echo -e "    ${GREEN}${repo_list[$i]}${NC} (${BLUE}${gh_versions[$i]}${NC})"
         done
@@ -1169,8 +1161,7 @@ batch_install() {
     done
 
     if [[ "$silent" == "false" ]]; then
-        echo
-        echo -e "Installation complete: $success_count/$valid_packages repository packages installed successfully."
+        echo -e "\nInstallation complete: $success_count/$valid_packages repository packages installed successfully."
         
         if [[ ${#all_dependencies[@]} -gt 0 ]]; then
             echo -e "\nPlease install missing dependencies using command:"
@@ -1202,7 +1193,6 @@ remove_package() {
     fi
 
     if [[ "$silent_mode" == "false" ]]; then
-        echo
         echo -e "\nRemoving package: $binary_name"
         echo "Repository: $repo_name"
         echo "Installed version: $version"
