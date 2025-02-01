@@ -3,3 +3,4 @@
 .config
 .config/fish/completions/eza.fish
 .gitignore
+.vscode/settings.json
