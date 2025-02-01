@@ -78,6 +78,24 @@ eza             v0.20.16     /home/ahmed/ghpm/.local/bin/eza
 micro           v2.0.14      /home/ahmed/ghpm/.local/bin/micro
 lazygit         v0.45.0      /home/ahmed/ghpm/.local/bin/lazygit
 
+$ ghpm update
+Checking for updates...
+bat has an update available (v0.24.0 → 0.25.0)
+micro is already up to date (v2.0.14)
+rg has an update available (14.0.1 → 14.1.1)
+zoxide is already up to date (v0.9.6)
+
+Updates available 2:
+    bat (v0.24.0→0.25.0)
+    rg (14.0.1→14.1.1)
+
+Proceed to update? [Y/n] y
+bat ... Done!
+rg ... Done!
+
+Update summary:
+  Packages checked: 11
+  Updates completed: 2
 ```
 
 ## Dependencies
