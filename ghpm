@@ -1054,14 +1054,10 @@ batch_install() {
         local binary_name=$(echo "$line" | cut -d'|' -f2 | tr -d ' ')
         [[ -z "$binary_name" ]] && binary_name=$(basename "$line")
         
-        # Get APT version
-        local apt_version="not found"
-        if command -v apt-cache >/dev/null 2>&1; then
-            apt_version=$(apt-cache policy "$binary_name" 2>/dev/null | 
-                         grep 'Candidate:' | 
-                         sed -E 's/.*Candidate: //; s/-[^-]*ubuntu[^-]*//; s/-$//; s/[^0-9.].*//; s/^/v/')
-            [[ -z "$apt_version" || "$apt_version" == "none" ]] && apt_version="not found"
-        fi
+        # Get APT version using just the binary name, not the full repo path
+        local apt_version=$(command -v apt-cache >/dev/null 2>&1 && 
+            apt-cache policy "$(basename "$binary_name")" 2>/dev/null | 
+            awk -v nf="not found" '/Candidate:/ {v=$2; if(v=="(none)")print nf; else{sub(/^[0-9]+:|~.*|\+.*|-.*/, "",v); print v}}; END{if(!NR)print nf}')
 
         # Validate repository
         validation_output=$(validate_input "$line" true true)
