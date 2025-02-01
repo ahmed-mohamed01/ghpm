@@ -753,7 +753,6 @@ db_ops() {
                 --arg repo "$repo_name" \
                 --arg id "$ghpm_id" \
                 --arg ver "$version" \
-                --arg time "$current_time" \
                 --argjson files "$files_json" \
                 --argjson aliases "$aliases_json" \
                 '.[$name] = {
@@ -1026,6 +1025,7 @@ batch_install() {
     done < "$repos_file"
 
     if [[ "$silent" == "false" ]]; then
+        echo
         echo "Processing ($total_repos) repositories from $repos_file:"
         echo
         # Fixed width for consistent columns
@@ -1064,7 +1064,12 @@ batch_install() {
         # Validate repository
         validation_output=$(validate_input "$line" true true)
         ret=$?
-        
+
+        local latest_version=""
+        if [[ $ret -eq 3 || $ret -eq 4 ]]; then
+            IFS=':' read -r _ _ latest_version _ <<< "$validation_output"
+        fi
+
         case $ret in
             0)  IFS=':' read -r repo_name binary_name latest_version <<< "$validation_output"
                 gh_response=$(query_github_api "$repo_name")
@@ -1087,12 +1092,12 @@ batch_install() {
                         gh_versions+=("$latest_version")
                         apt_versions+=("$apt_version")
                         assets+=("$chosen_asset")
-                        # Modified this line to handle the asset display properly
+                        local display_asset=$(basename "$chosen_asset")
                         printf "%b%-${pkg_width}s %b%-${ver_width}s %b%-${apt_width}s %b%s\n" \
                             "$GREEN" "$binary_name" \
                             "$NC$BLUE" "$latest_version" \
                             "$NC$BLUE" "$apt_version" \
-                            "$NC" "$chosen_asset"
+                            "$NC" "$display_asset"
                     else
                         printf "%b%-${pkg_width}s %b%-${ver_width}s %b%-${apt_width}s %b%s%b %s\n" \
                             "$GREEN" "$binary_name" \
@@ -1127,12 +1132,15 @@ batch_install() {
     done < "$repos_file"
 
     if [[ ${#repo_list[@]} -eq 0 ]]; then
-        echo -e "\n${YELLOW}No repositories to install - all packages are either installed, skipped, or source only.${NC}"
+        echo
+        echo -e "${YELLOW}No repositories to install - all packages are either installed, skipped, or source only.${NC}"
+        echo
         return 0
     fi
 
     if [[ "$silent" == "false" ]]; then
-        echo -e "\nRepos to install:"
+        echo
+        echo "Repos to install:"
         for i in "${!repo_list[@]}"; do
             echo -e "    ${GREEN}${repo_list[$i]}${NC} (${BLUE}${gh_versions[$i]}${NC})"
         done
@@ -1161,7 +1169,8 @@ batch_install() {
     done
 
     if [[ "$silent" == "false" ]]; then
-        echo -e "\nInstallation complete: $success_count/$valid_packages repository packages installed successfully."
+        echo
+        echo -e "Installation complete: $success_count/$valid_packages repository packages installed successfully."
         
         if [[ ${#all_dependencies[@]} -gt 0 ]]; then
             echo -e "\nPlease install missing dependencies using command:"
@@ -1193,6 +1202,7 @@ remove_package() {
     fi
 
     if [[ "$silent_mode" == "false" ]]; then
+        echo
         echo -e "\nRemoving package: $binary_name"
         echo "Repository: $repo_name"
         echo "Installed version: $version"
