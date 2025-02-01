@@ -1540,7 +1540,7 @@ main() {
             db_ops list ;;
 
         "--version"|"-v")
-            echo "0.0.7" ;;
+            echo "0.1.0" ;;
 
         "help"|"--help"|"-h"|"*"|*)
             echo "GitHub Package Manager - a script to download and manage precompiled binaries from Github"
