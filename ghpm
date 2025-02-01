@@ -1020,103 +1020,39 @@ batch_install() {
     # Count valid repositories
     local total_repos=0
     while IFS= read -r line; do
-        # Skip empty lines and full comment lines
         [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
-        # Remove inline comments
         line=$(echo "$line" | sed 's/[[:space:]]*#.*$//')
         [[ -z "$line" ]] && continue
         ((total_repos++))
     done < "$repos_file"
 
-    # Setup display
     if [[ "$silent" == "false" ]]; then
         echo "Processing ($total_repos) repositories from $repos_file:"
         echo
-        # Column widths
+        # Fixed width for consistent columns
         local pkg_width=20
         local ver_width=15
         local apt_width=15
         local asset_width=50
         
-        # Print headers
-        printf "%-${pkg_width}s %-${ver_width}s %-${apt_width}s %-${asset_width}s\n" "Binary" "Github" "APT" "Asset/Notes"
+        printf "%-${pkg_width}s %-${ver_width}s %-${apt_width}s %-${asset_width}s\n" \
+            "Binary" "Github" "APT" "Asset/Notes"
         printf "%s\n" "$(printf '%0.s-' $(seq 1 95))"
     fi
 
     # Initialize arrays
-    local repo_list=() binary_names=() gh_versions=() apt_versions=() assets=() asset_status=()
-    local skipped_repos=() skipped_reasons=()
+    local repo_list=() binary_names=() gh_versions=() apt_versions=() assets=()
     local valid_packages=0
 
     while IFS= read -r line; do
-        # Skip empty lines and full comment lines
         [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
-        # Remove inline comments
         line=$(echo "$line" | sed 's/[[:space:]]*#.*$//')
         [[ -z "$line" ]] && continue
         
-        local repo_name binary_name latest_version current_version
+        # Initialize binary_name for apt-cache lookup
+        local binary_name=$(echo "$line" | cut -d'|' -f2 | tr -d ' ')
+        [[ -z "$binary_name" ]] && binary_name=$(basename "$line")
         
-        # Validate repository format
-        validation_output=$(validate_input "$line" true true)
-        ret=$?
-        
-        case $ret in
-            0)  IFS=':' read -r repo_name binary_name latest_version <<< "$validation_output"
-                ;;
-            1|2) continue ;;
-            3)  IFS=':' read -r repo_name binary_name latest_version status <<< "$validation_output"
-                current_version=$(db_ops "get_version" "$binary_name")
-                # Get APT version
-                local apt_version="not found"
-                if command -v apt-cache >/dev/null 2>&1; then
-                    apt_version=$(apt-cache policy "$binary_name" 2>/dev/null | 
-                                grep 'Candidate:' | 
-                                sed -E 's/.*Candidate: //; s/-[^-]*ubuntu[^-]*//; s/-$//; s/[^0-9.].*//; s/^/v/')
-                    [[ -z "$apt_version" || "$apt_version" == "none" ]] && apt_version="not found"
-                fi
-                skipped_repos+=("$repo_name")
-                skipped_reasons+=("installed and up to date")
-                [[ "$silent" == "false" ]] && printf "%s%-${pkg_width}s%s %s%-${ver_width}s%s %s%-${apt_width}s%s %s\n" \
-                    "$GREEN" "$binary_name" "$NC" \
-                    "$BLUE" "$current_version" "$NC" \
-                    "$BLUE" "$apt_version" "$NC" \
-                    "skipped: installed, up to date"
-                continue ;;
-            4)  IFS=':' read -r repo_name binary_name latest_version status <<< "$validation_output"
-                current_version=$(db_ops "get_version" "$binary_name")
-                # Get APT version
-                local apt_version="not found"
-                if command -v apt-cache >/dev/null 2>&1; then
-                    apt_version=$(apt-cache policy "$binary_name" 2>/dev/null | 
-                                grep 'Candidate:' | 
-                                sed -E 's/.*Candidate: //; s/-[^-]*ubuntu[^-]*//; s/-$//; s/[^0-9.].*//; s/^/v/')
-                    [[ -z "$apt_version" || "$apt_version" == "none" ]] && apt_version="not found"
-                fi
-                skipped_repos+=("$repo_name")
-                skipped_reasons+=("installed, update available")
-                [[ "$silent" == "false" ]] && printf "%s%-${pkg_width}s%s %s%-${ver_width}s%s %s%-${apt_width}s%s %s\n" \
-                    "$GREEN" "$binary_name" "$NC" \
-                    "$BLUE" "${latest_version}*" "$NC" \
-                    "$BLUE" "$apt_version" "$NC" \
-                    "skipped: installed, update available"
-                continue ;;
-            *) continue ;;
-        esac
-        
-        # Process repository data
-        gh_response=$(query_github_api "$repo_name")
-        if [[ $? -ne 0 ]]; then
-            continue
-        fi
-        
-        processed_data=$(process_asset_data "$gh_response")
-        if [[ $? -ne 0 ]]; then
-            continue
-        fi
-        
-        read -r gh_version chosen_asset has_source asset_url < <(echo "$processed_data" | jq -r '[.version, (.chosen_asset.name // "null"), .has_source_files, (.chosen_asset.url // "null")] | @tsv')
-
         # Get APT version
         local apt_version="not found"
         if command -v apt-cache >/dev/null 2>&1; then
@@ -1125,98 +1061,101 @@ batch_install() {
                          sed -E 's/.*Candidate: //; s/-[^-]*ubuntu[^-]*//; s/-$//; s/[^0-9.].*//; s/^/v/')
             [[ -z "$apt_version" || "$apt_version" == "none" ]] && apt_version="not found"
         fi
-        
-        # Handle no viable assets
-        if [[ "$chosen_asset" == "null" ]]; then
-            skipped_repos+=("$repo_name")
-            [[ "$has_source" == "true" ]] && skipped_reasons+=("source only") || skipped_reasons+=("no viable assets")
-            [[ "$silent" == "false" ]] && printf "%s%-${pkg_width}s%s %s%-${ver_width}s%s %s%-${apt_width}s%s %s\n" \
-                "$GREEN" "$binary_name" "$NC" \
-                "$BLUE" "source" "$NC" \
-                "$BLUE" "$apt_version" "$NC" \
-                "skipped: source only"
-            continue
-        fi
 
-        # Store valid package info
-        ((valid_packages++))
-        binary_names+=("$binary_name")
-        repo_list+=("$repo_name")
-        gh_versions+=("$gh_version")
-        apt_versions+=("$apt_version")
-        assets+=("$chosen_asset")
-        [[ "$silent" == "false" ]] && printf "%s%-${pkg_width}s%s %s%-${ver_width}s%s %s%-${apt_width}s%s %s\n" \
-            "$GREEN" "$binary_name" "$NC" \
-            "$BLUE" "$gh_version" "$NC" \
-            "$BLUE" "$apt_version" "$NC" \
-            "$chosen_asset"
+        # Validate repository
+        validation_output=$(validate_input "$line" true true)
+        ret=$?
+        
+        case $ret in
+            0)  IFS=':' read -r repo_name binary_name latest_version <<< "$validation_output"
+                gh_response=$(query_github_api "$repo_name")
+                if [[ $? -ne 0 ]]; then
+                    printf "%b%-${pkg_width}s %b%-${ver_width}s %b%-${apt_width}s %b%s%b %s\n" \
+                        "$GREEN" "$binary_name" \
+                        "$NC$BLUE" "-" \
+                        "$NC$BLUE" "$apt_version" \
+                        "$NC$YELLOW" "skipped:" "$NC" "repo not found"
+                    continue
+                fi
+
+                processed_data=$(process_asset_data "$gh_response")
+                if [[ $? -eq 0 ]]; then
+                    local chosen_asset=$(echo "$processed_data" | jq -r '.chosen_asset.name // "none"')
+                    if [[ "$chosen_asset" != "none" ]]; then
+                        ((valid_packages++))
+                        binary_names+=("$binary_name")
+                        repo_list+=("$repo_name")
+                        gh_versions+=("$latest_version")
+                        apt_versions+=("$apt_version")
+                        assets+=("$chosen_asset")
+                        # Modified this line to handle the asset display properly
+                        printf "%b%-${pkg_width}s %b%-${ver_width}s %b%-${apt_width}s %b%s\n" \
+                            "$GREEN" "$binary_name" \
+                            "$NC$BLUE" "$latest_version" \
+                            "$NC$BLUE" "$apt_version" \
+                            "$NC" "$chosen_asset"
+                    else
+                        printf "%b%-${pkg_width}s %b%-${ver_width}s %b%-${apt_width}s %b%s%b %s\n" \
+                            "$GREEN" "$binary_name" \
+                            "$NC$BLUE" "source" \
+                            "$NC$BLUE" "$apt_version" \
+                            "$NC$YELLOW" "skipped:" "$NC" "source only"
+                    fi
+                fi
+                ;;
+            1)  printf "%b%-${pkg_width}s %b%-${ver_width}s %b%-${apt_width}s %b%s%b %s\n" \
+                    "$GREEN" "$line" \
+                    "$NC$BLUE" "-" \
+                    "$NC$BLUE" "-" \
+                    "$NC$YELLOW" "skipped:" "$NC" "invalid format"
+                ;;
+            2)  printf "%b%-${pkg_width}s %b%-${ver_width}s %b%-${apt_width}s %b%s%b %s\n" \
+                    "$GREEN" "$line" \
+                    "$NC$BLUE" "-" \
+                    "$NC$BLUE" "-" \
+                    "$NC$YELLOW" "skipped:" "$NC" "repo not found"
+                ;;
+            3)  IFS=':' read -r repo_name binary_name latest_version _ <<< "$validation_output"
+                printf "%b%-${pkg_width}s %b%-${ver_width}s %b%-${apt_width}s %b%s%b %s\n" \
+                    "$GREEN" "$binary_name" \
+                    "$NC$BLUE" "$latest_version" \
+                    "$NC$BLUE" "$apt_version" \
+                    "$NC$YELLOW" "skipped:" "$NC" "installed, up to date"
+                ;;
+            4)  IFS=':' read -r repo_name binary_name latest_version _ <<< "$validation_output"
+                printf "%b%-${pkg_width}s %b%-${ver_width}s %b%-${apt_width}s %b%s%b %s\n" \
+                    "$GREEN" "$binary_name" \
+                    "$NC$BLUE" "$latest_version" \
+                    "$NC$BLUE" "$apt_version" \
+                    "$NC$YELLOW" "skipped:" "$NC" "installed, update available"
+                ;;
+        esac
     done < "$repos_file"
 
-    # Check if we have any repos to install
     if [[ ${#repo_list[@]} -eq 0 ]]; then
-        # Display skipped repos first
-        if [[ "$silent" == "false" && ${#skipped_repos[@]} -gt 0 ]]; then
-            echo -e "\nSkipped repositories:"
-            local needs_update=false
-            local update_repos=()
-            for i in "${!skipped_repos[@]}"; do
-                echo -e "        - ${skipped_repos[$i]} (${skipped_reasons[$i]})"
-                if [[ "${skipped_reasons[$i]}" == *"installed"* && "${skipped_reasons[$i]}" != *"up to date"* ]]; then
-                    needs_update=true
-                    update_repos+=("${skipped_repos[$i]}")
-                fi
-            done
-            
-            if [[ "$needs_update" == "true" ]]; then
-                echo -e "\nTo update installed packages, run:"
-                for repo in "${update_repos[@]}"; do
-                    echo -e "    ${GREEN}ghpm update ${repo##*/}${NC}"
-                done
-            fi
-        fi
-        
-        # Show the no repositories message in yellow at the end
         echo -e "\n${YELLOW}No repositories to install - all packages are either installed, skipped, or source only.${NC}"
         return 0
     fi
 
-    # Display skipped repos and update notice
-    if [[ "$silent" == "false" && ${#skipped_repos[@]} -gt 0 ]]; then
-        echo -e "\nSkipped repositories:"
-        local needs_update=false
-        local update_repos=()
-        for i in "${!skipped_repos[@]}"; do
-            echo "        - ${skipped_repos[$i]} (${skipped_reasons[$i]})"
-            if [[ "${skipped_reasons[$i]}" == *"installed"* && "${skipped_reasons[$i]}" != *"up to date"* ]]; then
-                needs_update=true
-                update_repos+=("${skipped_repos[$i]}")
-            fi
+    if [[ "$silent" == "false" ]]; then
+        echo -e "\nRepos to install:"
+        for i in "${!repo_list[@]}"; do
+            echo -e "    ${GREEN}${repo_list[$i]}${NC} (${BLUE}${gh_versions[$i]}${NC})"
         done
-        
-        if [[ "$needs_update" == "true" ]]; then
-            echo -e "\nTo update installed packages, run:"
-            for repo in "${update_repos[@]}"; do
-                echo "    ghpm update ${repo##*/}"
-            done
+
+        echo -e "\nDependencies needed:"
+        if [[ ${#all_dependencies[@]} -gt 0 ]]; then
+            all_dependencies=($(printf "%s\n" "${all_dependencies[@]}" | sort -u))
+            printf "    %s\n" "${all_dependencies[@]}"
+        else
+            echo "    None"
         fi
 
         echo
-        echo "Dependencies needed:"
-        if [[ ${#all_dependencies[@]} -gt 0 ]]; then
-            all_dependencies=($(printf "%s\n" "${all_dependencies[@]}" | sort -u))
-            printf "        %s\n" "${all_dependencies[@]}"
-        else
-            echo "        No additional dependencies required"
-        fi
-
-        if [[ ${#repo_list[@]} -gt 0 ]]; then
-            echo
-            read -p "Install all repos? [y/N] " -r response
-            [[ ! "$response" =~ ^[Yy]$ ]] && echo "Installation cancelled." && return 0
-        fi
+        read -p "Install all repos? [y/N] " -r response
+        [[ ! "$response" =~ ^[Yy]$ ]] && echo "Installation cancelled." && return 0
     fi
 
-    # Install packages
     local success_count=0
     for i in "${!repo_list[@]}"; do
         if standalone_install "${repo_list[i]}" true; then
@@ -1228,8 +1167,7 @@ batch_install() {
     done
 
     if [[ "$silent" == "false" ]]; then
-        local skipped_count=$((${#skipped_repos[@]} - valid_packages))
-        echo -e "\nInstallation complete: $success_count/$valid_packages repository packages installed successfully. $skipped_count repos skipped."
+        echo -e "\nInstallation complete: $success_count/$valid_packages repository packages installed successfully."
         
         if [[ ${#all_dependencies[@]} -gt 0 ]]; then
             echo -e "\nPlease install missing dependencies using command:"
