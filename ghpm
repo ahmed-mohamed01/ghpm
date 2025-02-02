@@ -536,7 +536,7 @@ validate_binary() {
 
     declare -A FILE_PATTERNS=(
         [x86_64]="ELF|x86[-_ ]64|LSB" 
-        [aarch64]="ELF|*aarch64.*LSB.*"
+        [aarch64]="ELF.*LSB.*aarch64|ELF.*aarch64.*LSB"
     )
 
     # Verify executable is actually a binary
